@@ -390,6 +390,61 @@ reflection USB is probably the better engineering choice here anyway:
 Decision still open, but it should be made on cable length, not on
 which is simpler on paper.
 
+### Power tree and part selection
+
+Every part below was verified against its own datasheet, not chosen from
+memory. Two of them corrected an earlier wrong guess, noted inline.
+
+| Role | Part | Key evidence |
+| --- | --- | --- |
+| Front-end protection | **LM74930-Q1** | AEC-Q100 grade 1 (−40/+125 °C), 4–65 V in, reverse protection to −65 V, adjustable OC/OV, circuit breaker, "meets automotive ISO7637 transient requirements with a suitable TVS diode" |
+| 12 V → 5 V buck | **LM61460-Q1** | AEC-Q100 grade 1, 3–36 V in (42 V transient), 6 A, synchronous, low-EMI with spread spectrum |
+| CAN FD | **TCAN1044V-Q1** | AEC-Q100 grade 1, VIO 1.7–5.5 V with explicit 1.8 V support, CAN FD to 8 Mbps, ±58 V bus fault protection |
+| DSI→LVDS bridge | **SN65DSI85-Q1** | AEC-Q100 grade 2 (−40/+105 °C), single 1.8 V rail, HTQFP-64 |
+
+**The module sets two hard constraints** that drove these choices:
+
+- **VCC is 3.135–5.5 V**, so the main rail is 5.0 V.
+- **Verdin I/O is 1.8 V logic** (absolute max 2.1 V). This is the
+  constraint that eliminates most automotive CAN transceivers.
+
+#### Two corrections worth recording
+
+**The CAN transceiver must be the `V` variant.** An earlier draft of this
+plan named the TCAN1043-Q1, which only level-shifts to 3.3 V or 5 V — it
+cannot talk to 1.8 V logic at all. Worse, within the correct family the
+datasheet's own device comparison table reads:
+
+| Part | Low-voltage I/O support on pin 5 |
+| --- | --- |
+| TCAN1044-Q1 | No — pin 5 is a No-Connect |
+| **TCAN1044V-Q1** | Yes — pin 5 is VIO, 1.8–5.5 V |
+
+The suffix is the entire difference. Order the wrong one and the board
+assembles perfectly and the CAN link never works.
+
+**The surge stopper is TI's, not the obvious ADI part.** The LTC4364 is
+the better-known automotive surge stopper and does something the
+LM74930-Q1 does not — it *regulates through* an overvoltage event rather
+than disconnecting. But its datasheet order table lists only C, I and H
+temperature grades with **no AEC-Q100 qualification**, which fails this
+family's standard (see `ecu-pcb`, where the last unqualified part was
+deliberately swapped out). The LM74930-Q1 is explicitly `-Q1`.
+
+**The tradeoff that buys, and its risk:** the LM74930-Q1 protects against
+overvoltage by *disconnecting the load*, not by clamping through it. On a
+real load dump that means the 5 V rail collapses and the module reboots —
+an Android boot, not a flicker. The design intent is therefore that the
+**TVS absorbs the transient** and the LM74930-Q1's overvoltage cutoff
+sits above the TVS clamp as a last-resort backstop, so ordinary events
+never reach the disconnect threshold. That makes TVS sizing a real design
+task rather than a formality; see "Known open items".
+
+For scale, the LTC4364 datasheet gives the industry-standard transient
+shapes: a general automotive transient of tr = 10 µs / VPK = 80 V /
+τ = 1 ms, and **load dump of tr = 5 ms / VPK = 60 V / τ = 200 ms**. The
+200 ms one carries the energy that matters.
+
 ### Panel quality matters more than resolution here
 
 Recorded because it should drive the panel budget. In a car, in rough
@@ -531,6 +586,17 @@ separate LVDS table on page 42.
   across the rest of this family. Acceptable for a cabin/dash mount but a
   real deviation from the family's engine-bay-rated standard, and worth a
   deliberate decision rather than an accident.
+- **TVS sizing is a real open task, not a formality.** Because the
+  LM74930-Q1 disconnects rather than clamps through, the TVS is what
+  actually keeps the display alive during a transient. It has to absorb a
+  60 V / 200 ms load dump from an unsuppressed 1972 alternator, which is
+  a lot of energy — a 3 kW SMDJ-class part may not be enough. If sizing
+  does not close, the fallback is to accept the reboot, or to revisit the
+  clamp-through LTC4364 and its lack of AEC-Q100.
+- **Verdin power consumption is still unknown.** The module datasheet
+  gives no current figure, deferring to the Verdin Family Specification,
+  which has not been pulled. The 5 V rail is provisionally sized on the
+  LM61460-Q1's 6 A rather than on a real budget.
 - **Unit E may need splitting.** At 158 pins it is ~200 mm per side,
   which fits an A3 sheet only marginally. Splitting it into two units of
   ~79 is the likely fix, but the real constraint will not be known until
