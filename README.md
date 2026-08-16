@@ -183,24 +183,54 @@ dual-link mode each link carries half the pixels. TI's own power-table
 reference case is literally 1920×1200 dual-link with
 **LVDS CLK OUT = 81.6 MHz**.
 
-The real picture:
+The real picture, with every number now confirmed against a primary
+source:
 
 | Constraint | Value | Limit | Utilisation |
 | --- | --- | --- | --- |
-| LVDS output clock, per link | ~81.6 MHz | 154 MHz | **~53% — comfortable** |
-| DSI input, per lane (CVT-RB) | ~925 Mbps | 1 Gbps | **~93% — tight** |
+| i.MX 95 DSI transmit, per lane | ~925 Mbps | **2500 Mbps** | **~37% — huge headroom** |
+| LVDS output clock, per link | ~81.6 MHz | 154 MHz | ~53% — comfortable |
+| **Bridge DSI input, per lane** | ~925 Mbps | **1 Gbps** | **~93% — the bottleneck** |
 
-So the binding constraint is the **DSI input side**, not the LVDS output
-side, and it is tighter than the 83% previously recorded here (that
-figure counted payload only and ignored blanking).
+The i.MX 95 side is confirmed a non-issue: **IMX95AEC Rev 8, Table 58,
+`RATE[TX]` Transmit Serial Data Rate = 80 to 2500 Mbps per lane**, and
+the feature summary lists "1x 350 MHz MIPI-DSI (4-lane, 2.5 Gbps/lane)
+supporting 4kp30 or 3840 x 1440p60".
+
+So the **SN65DSI85-Q1 is the sole bottleneck** in the chain. That is
+acceptable — TI documents 1920×1200 as a supported use case for this
+part — but it means the bridge, not the SoC, is what to re-examine if
+the timing ever fails to close.
+
+The same datasheet confirms the native LVDS ceiling recorded above:
+"2x 1080p60 LVDS Tx (2x 4-lane or 1x 8-lane)".
 
 - 1920×1200p60 CVT-RB ≈ 154 MHz pixel clock × 24 bpp = ~3.70 Gbps across
-  4 lanes = ~925 Mbps/lane. Under the 1 Gbps limit, with ~7% headroom.
+  4 lanes = ~925 Mbps/lane. Under the bridge's 1 Gbps limit, with ~7%
+  headroom.
 - With **standard** (non-reduced) blanking the pixel clock is ~193 MHz →
-  ~1.16 Gbps/lane, which **exceeds** the limit. Reduced-blanking timing
-  is therefore mandatory, not merely preferable.
+  ~1.16 Gbps/lane, which **exceeds** the bridge limit (though not the
+  SoC's). Reduced-blanking timing is therefore mandatory, not merely
+  preferable.
 - Fallback remains 1920×1080, which relaxes the DSI side to
   ~830 Mbps/lane.
+
+### Layout constraints (i.MX 95 Hardware Design Guide UG10210 Rev 2.0)
+
+- **100 Ω differential** for MIPI DSI *and* LVDS, ±10% (Table 40). Also
+  50 Ω single-ended for everything else unless specified. This sits
+  comfortably inside the SN65DSI85-Q1's own 90–132 Ω LVDS output range.
+- For MIPI-DSI compliance tests 1.1.4/1.1.5, keep **parasitic
+  capacitance of each DSI trace below 10 pF** — relevant because the DSI
+  run crosses the carrier from X1 to the bridge.
+- The module's unused native LVDS pins are simply left **not connected**
+  (datasheet Table 4). The `VDD_LVDS_1P8`-to-ground-via-10 kΩ guidance in
+  that same table applies to the SoC, which is Toradex's side of the
+  boundary, not this carrier's.
+
+Note the Verdin carrier must still follow Toradex's own Carrier Board
+Design Guide (doc 108140) for anything X1-side; UG10210 describes the
+raw SoC.
 
 For reference, the module's native LVDS pins, should the fallback be
 needed:
@@ -348,16 +378,12 @@ separate LVDS table on page 42.
   candidate found so far includes touch or optical bonding as standard,
   and the one 1920×1200 part located is only −20 to +70 °C. Expect MOQ
   and lead time rather than an off-the-shelf purchase.
-- **DSI timing not yet closed.** The binding constraint is the DSI input
-  side at ~925 Mbps/lane against a 1 Gbps limit (~93%), and it requires
-  reduced-blanking timing — standard blanking exceeds the limit outright.
-  This needs confirming on a Verdin EVK before committing to fab, since
-  it depends on the real panel's timing and on whether the i.MX 95 DSI
-  will actually run its lanes at that rate. Fallback is 1920×1080.
-- **Does the i.MX 95 DSI support the needed per-lane rate?** The bridge
-  accepts up to 1 Gbps/lane, but the module side has not been confirmed
-  to drive ~925 Mbps/lane. Needs checking against the i.MX 95 reference
-  manual — the NXP datasheet URLs tried so far returned 404.
+- **DSI timing closes on paper but is not yet proven on hardware.** Every
+  number in the chain is now confirmed against a primary source and
+  1920×1200 fits, but with only ~7% headroom on the bridge's DSI input
+  and a hard requirement for reduced-blanking timing. Worth confirming on
+  a Verdin EVK with the real panel before committing to fab. Fallback is
+  1920×1080.
 - **LVDS mapping convention not yet fixed** — VESA vs JEIDA (a.k.a. SPWG)
   differ in bit ordering and are not interchangeable. Determined by the
   chosen panel.
