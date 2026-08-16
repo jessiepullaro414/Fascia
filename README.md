@@ -411,6 +411,40 @@ memory. Two of them corrected an earlier wrong guess, noted inline.
 - **Verdin I/O is 1.8 V logic** (absolute max 2.1 V). This is the
   constraint that eliminates most automotive CAN transceivers.
 
+#### Front-end topology (resolved from the datasheet, not inferred)
+
+TI's own front-page reference circuit for the LM74930-Q1 is titled
+**"VBAT 12-V or 24-V With 200-V Unsuppressed Load Dump — Output Clamp"**.
+That is this application almost exactly: an unsuppressed alternator on a
+1972 car, with the output clamped rather than disconnected.
+
+The back-to-back FET arrangement is easy to get backwards, so it is
+written down here:
+
+```
+VBAT ──[RSENSE]──┬── Q2 drain            Q2 = pass / load switch  (HGATE)
+                 │                       Q1 = ideal diode         (DGATE)
+                 Q2 source ──┬── COMMON ──┬── Q1 source
+                             │            │
+                        OUT (15)      A (2)      ← both pins on COMMON
+                                                    (common-source pair)
+                                       Q1 drain ── VOUT_PROT ── C (24)
+```
+
+The resolution: **`A` (2) and `OUT` (15) are the same node.** "Back-to-back
+N-channel MOSFETs in common source configuration" means both FET sources
+tie together, and the datasheet independently says `A` is "the source of
+the external ideal diode MOSFET" while `OUT` is "the common source rail".
+`C` (24) is the ideal diode's drain and therefore the protected output.
+Direction is confirmed by the ideal-diode spec regulating "10.5 mV **A to
+C** forward voltage drop", and by `HGATE` driving "the **first** MOSFET in
+the power path".
+
+Reference-design support components, all named in that circuit: `RSENSE`
+with `RSET` (50 Ω into `CS+`), `RISCP` on `ISCP`, `RILIM` on `ILIM`,
+`RMON` on `IMON`, `CT` on `TMR`, `CVS` on `VS`, `CCAP` across `CAP`–`VS`,
+and the `R1`/`R2`/`R3` dividers feeding `OV`/`OVCLAMP` and `UVLO`.
+
 #### The 5 V rail needs splitting
 
 Rough budget, with the module figure still a placeholder:

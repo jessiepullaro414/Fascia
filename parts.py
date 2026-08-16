@@ -81,11 +81,51 @@ TCAN1044V_Q1 = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# LM61460-Q1 - automotive 3-36 V, 6 A low-EMI synchronous buck.
+# Source: TI SNVSB70F, May 2019, revised June 2021. VQFN-HR-14 (RJR).
+#
+# GOTCHA: BIAS (1) is not a bypass pin. It feeds the internal LDO and
+# should be tied to the OUTPUT rail to improve efficiency - but only while
+# Vout is at or below 12 V. Above that the datasheet says tie it to
+# ground. At our 5 V output it goes to the output.
+#
+# GOTCHA: three pins must not float AND must not be grounded - FB (4),
+# RT (6) and EN/SYNC (7). Grounding RT is a particularly easy mistake
+# since most "set with a resistor to ground" pins tolerate it.
+#
+# GOTCHA: AGND (3) must connect to BOTH PGND1 (9) and PGND2 (11) on the
+# PCB, and VIN1/VIN2 and PGND1/PGND2 each need a low-impedance connection
+# to their pair. These are one net electrically but a real layout
+# constraint, not something the schematic alone captures.
+#
+# RBOOT (13) sets the SW-node rise time, so it is the EMI knob on this
+# part - relevant here given LVDS and a car radio share the enclosure.
+# ---------------------------------------------------------------------------
+LM61460_Q1 = [
+    (1,  "BIAS",     "power_in"),
+    (2,  "VCC",      "power_out"),   # internal LDO; 1 uF to AGND, no ext load
+    (3,  "AGND",     "power_in"),
+    (4,  "FB",       "input"),       # do not float or ground
+    (5,  "PGOOD",    "open_collector"),
+    (6,  "RT",       "passive"),     # 5.76k-66.5k to GND -> 200k-2200 kHz
+    (7,  "EN/SYNC",  "input"),       # do not float; doubles as sync input
+    (8,  "VIN1",     "power_in"),
+    (9,  "PGND1",    "power_in"),
+    (10, "SW",       "output"),
+    (11, "PGND2",    "power_in"),
+    (12, "VIN2",     "power_in"),
+    (13, "RBOOT",    "passive"),     # SW rise time / EMI
+    (14, "CBOOT",    "passive"),     # 100 nF to SW
+]
+
+
 def verify():
     """Sanity-check the tables before anything builds symbols from them."""
     problems = []
     for name, pins in (("LM74930_Q1", LM74930_Q1),
-                       ("TCAN1044V_Q1", TCAN1044V_Q1)):
+                       ("TCAN1044V_Q1", TCAN1044V_Q1),
+                       ("LM61460_Q1", LM61460_Q1)):
         numbers = [p[0] for p in pins]
         if numbers != list(range(1, len(pins) + 1)):
             problems.append(f"{name}: pin numbers are not 1..{len(pins)} "
@@ -100,6 +140,9 @@ def verify():
     if len(TCAN1044V_Q1) != 8:
         problems.append(f"TCAN1044V_Q1 should have 8 pins, "
                         f"has {len(TCAN1044V_Q1)}")
+    if len(LM61460_Q1) != 14:
+        problems.append(f"LM61460_Q1 should have 14 pins, "
+                        f"has {len(LM61460_Q1)}")
     return problems
 
 
@@ -108,7 +151,8 @@ if __name__ == "__main__":
 
     problems = verify()
     for name, pins in (("LM74930-Q1 (VQFN-24)", LM74930_Q1),
-                       ("TCAN1044V-Q1 (SOIC-8)", TCAN1044V_Q1)):
+                       ("TCAN1044V-Q1 (SOIC-8)", TCAN1044V_Q1),
+                       ("LM61460-Q1 (VQFN-HR-14)", LM61460_Q1)):
         print(f"\n=== {name}: {len(pins)} pins ===")
         for num, pname, etype in pins:
             print(f"   {num:2d}  {pname:<8s} {etype}")
