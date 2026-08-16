@@ -6,20 +6,23 @@ Same script-driven discipline as the sibling manifold-pcb / ecu-pcb /
 thermo-pcb projects: this script is the source of truth. Never hand-edit
 the generated .kicad_sch or .kicad_sym - change this file and re-run.
 
-Current stage: the Verdin iMX95 X1 module connector only. The carrier's
-power tree, the SN65DSI85-Q1 bridge, the CAN transceiver and the panel
-connector are not here yet, so this is deliberately an incomplete
-schematic - see README.md's "Status".
+Current stage: the Verdin iMX95 X1 module connector, plus the 12 V
+automotive front end and the main 5 V buck. The SN65DSI85-Q1 bridge, the
+CAN transceiver, the audio codec, the USB-C port and the panel connector
+are not here yet, so this is deliberately an incomplete schematic - see
+README.md's "Status".
 
 What IS final at this stage:
   - all 260 X1 pins exist, banked into 6 units by verdin_x1.py
-  - every GND pin is tied to ground
-  - every VCC pin is tied to the +5V rail
+  - every GND pin is tied to ground, every VCC pin to the +5V rail
   - all 158 pins this board does not use carry real NoConnect items
+  - the LM74930-Q1 front end and LM61460-Q1 buck are fully wired, with
+    every one of their pins either netted or NoConnected
 
-What is NOT connected yet: the 47 pins in the control, display and
-communications banks. `kicad-cli sch erc` reports those as unconnected,
-which is correct and expected until the rest of the schematic exists.
+`kicad-cli sch erc` reports 51 violations, all expected: 50 X1 pins in
+the control, display and communications banks awaiting the blocks above,
+and IGN_SENSE, which has no destination until the ignition-sense divider
+reaches a module ADC pin.
 """
 import json
 import os
@@ -41,6 +44,7 @@ sys.path.insert(0, HERE)
 
 from verdin_pinout import X1_PINS                      # noqa: E402
 import verdin_x1                                       # noqa: E402
+import parts                                           # noqa: E402
 
 LIB = "Fascia"
 OUT_SCH = os.path.join(HERE, "Fascia.kicad_sch")
@@ -48,11 +52,13 @@ OUT_SYM = os.path.join(HERE, "Fascia.kicad_sym")
 OUT_TABLE = os.path.join(HERE, "sym-lib-table")
 OUT_PRO = os.path.join(HERE, "Fascia.kicad_pro")
 
-# A2, matching ecu-pcb - a 260-pin connector needs the room, and this
-# project's KiCad notes record that content silently running off a fixed
-# sheet is invisible in the editor and only shows on a real export.
-PAPER = "A2"
-SHEET_W, SHEET_H = 594.0, 420.0
+# A1: the 260-pin connector alone fills an A2, and the power tree needs
+# its own band beside it. This project's KiCad notes record that content
+# running off a fixed sheet is invisible in the editor and only shows on
+# a real fixed-size export, so main() checks every placement against the
+# sheet bounds.
+PAPER = "A1"
+SHEET_W, SHEET_H = 841.0, 594.0
 
 GRID = 1.27
 PITCH = 2.54          # pin-to-pin spacing down a symbol side
@@ -266,10 +272,254 @@ def pin_xy(unit, pin, sym_x, sym_y):
     return snap(sym_x + dx), snap(sym_y - dy)
 
 
+# ---------------------------------------------------------------------------
+# Generic parts and the declarative net list
+# ---------------------------------------------------------------------------
+# Rails get power symbols; everything else gets a stub wire and a local
+# label. This project's KiCad notes are explicit that the two mechanisms
+# do NOT merge - a label "GND" makes net "/GND" while a power symbol makes
+# global "GND" - so each net must pick one and stick to it.
+# VBAT_F and +12V_PROT are rails too, not signals: they feed power_in
+# pins, so ERC needs them driven. Both arrive through passive parts (a
+# fuse, and the ideal-diode FET), so nothing on the sheet "drives" them
+# and each needs a PWR_FLAG the same way GND and +5V do.
+POWER_NETS = {"GND", "+5V", "+12V_PROT", "+1V8", "VBAT_F"}
+
+# net -> a real (x, y) on that net, for anchoring PWR_FLAGs. This project's
+# KiCad notes record that a flag merged only by name, with nothing
+# touching it graphically, does not satisfy power_pin_not_driven.
+power_net_points = {}
+
+generic_pins = {}      # lib_id -> [(num, name, etype), ...]
+generic_offsets = {}   # (lib_id, num) -> (dx, dy) symbol space
+generic_heights = {}   # lib_id -> body height
+
+
+def build_generic_symbol(lib_id, ref_prefix, value, pins, footprint=""):
+    """A rectangular symbol, pins split first-half left / second-half right."""
+    half = -(-len(pins) // 2)
+    left, right = pins[:half], pins[half:]
+    rows = max(len(left), len(right), 1)
+    height = rows * PITCH + PITCH
+    longest = max((len(p[1]) for p in pins), default=1)
+    # Width must be a multiple of 2.54, NOT merely snapped to 1.27: pins
+    # sit at +/-(width/2 + LEAD), so an odd multiple of 1.27 puts every
+    # pin half a grid step off. That breaks the assumption place_part's
+    # snap() relies on, and shows up not as one tidy error but as a
+    # cascade - off-grid pins, then wires whose ends miss those pins,
+    # then dangling no-connects and isolated labels on the nets that
+    # failed to form. This project's KiCad notes warn to verify the
+    # pin-layout math rather than trust a single snap point; this is that
+    # precondition being violated.
+    width = max(15.24, 2.54 * -(-(longest * 2.0 + 7.62) // 2.54))
+
+    sym = Symbol.create_new(id=lib_id, reference=ref_prefix, value=value,
+                            footprint=footprint)
+    sym.pinNames = True
+    sym.pinNamesOffset = 0.508
+    sym.graphicItems.append(SyRect(
+        start=Position(-width / 2, -height / 2),
+        end=Position(width / 2, height / 2),
+        stroke=Stroke(width=0.254, type="default")))
+    sym.graphicItems[-1].fill.type = "background"
+
+    def side(items, x_tip, angle):
+        n = len(items)
+        for i, (num, name, etype) in enumerate(items):
+            py = ((n - 1) * PITCH) / 2 - i * PITCH
+            sym.pins.append(SymbolPin(
+                electricalType=etype, graphicalStyle="line",
+                position=Position(round(x_tip, 2), round(py, 2), angle),
+                length=LEAD, name=name, number=str(num)))
+            generic_offsets[(lib_id, num)] = (round(x_tip, 2), round(py, 2))
+
+    side(left, -(width / 2 + LEAD), 0)
+    side(right, width / 2 + LEAD, 180)
+
+    lib_symbols[lib_id] = sym
+    generic_pins[lib_id] = pins
+    generic_heights[lib_id] = height
+    return lib_id
+
+
+# Two-terminal parts all share one shape; three-terminal N-FET its own.
+PASSIVE_PINS = [(1, "1", "passive"), (2, "2", "passive")]
+NFET_PINS = [(1, "G", "input"), (2, "D", "passive"), (3, "S", "passive")]
+
+rail_syms = {}     # net -> power symbol lib_id
+
+
+def rail(net):
+    """Power symbol for `net`, created on first use."""
+    if net not in rail_syms:
+        rail_syms[net] = build_power_symbol(net, is_gnd=(net == "GND"))
+    return rail_syms[net]
+
+
+def place_part(lib_id, ref, value, x, y, nets):
+    """
+    Place a part and terminate every one of its pins.
+
+    `nets` maps pin NAME to net name. A pin whose name is absent, or maps
+    to None, gets a real NoConnect item rather than being left dangling -
+    same rule the unused X1 pins follow.
+    """
+    place(lib_id, ref, value, x, y, body_h=generic_heights[lib_id])
+    for num, name, _etype in generic_pins[lib_id]:
+        dx, dy = generic_offsets[(lib_id, num)]
+        px, py = snap(x + dx), snap(y - dy)
+        net = nets.get(name)
+        if net is None:
+            sch.noConnects.append(NoConnect(position=Position(px, py), uuid=U()))
+            continue
+        out = -1 if dx < 0 else 1
+        wx, wy = snap(px + out * STUB), py
+        add_wire(px, py, wx, wy)
+        if net in POWER_NETS:
+            place(rail(net), f"#PWR_{ref}_{num}", net, wx, wy, hide_ref=True)
+            power_net_points.setdefault(net, (wx, wy))
+        else:
+            add_label(net, wx, wy, 0 if out > 0 else 180)
+
+
+def add_label(text, x, y, angle):
+    assert text not in POWER_NETS, \
+        f"power net {text} must use a power symbol, not a label"
+    sch.labels.append(LocalLabel(
+        text=text, position=Position(snap(x), snap(y), angle),
+        effects=Effects(font=Font(width=1.27, height=1.27),
+                        justify=Justify(horizontally="left")),
+        uuid=U()))
+
+
+def build_power_tree(x0, y0):
+    """
+    12 V automotive front end and the main 5 V buck.
+
+    Topology follows TI's own reference circuit for the LM74930-Q1,
+    "VBAT 12-V or 24-V With 200-V Unsuppressed Load Dump - Output Clamp".
+    The back-to-back FET arrangement is the part worth reading carefully:
+    Q2 (pass, HGATE) and Q1 (ideal diode, DGATE) share a COMMON source
+    node, and both the A and OUT pins sit on it.
+    """
+    r = build_generic_symbol(f"{LIB}:R", "R", "R", PASSIVE_PINS)
+    c = build_generic_symbol(f"{LIB}:C", "C", "C", PASSIVE_PINS)
+    l = build_generic_symbol(f"{LIB}:L", "L", "L", PASSIVE_PINS)
+    tvs = build_generic_symbol(f"{LIB}:TVS", "D", "TVS", PASSIVE_PINS)
+    fuse = build_generic_symbol(f"{LIB}:FUSE", "F", "Fuse", PASSIVE_PINS)
+    nfet = build_generic_symbol(f"{LIB}:NFET", "Q", "NFET", NFET_PINS)
+    conn3 = build_generic_symbol(f"{LIB}:CONN3", "J", "Power in",
+                                 [(1, "VBAT", "passive"), (2, "GND", "passive"),
+                                  (3, "IGN", "passive")])
+    u_fe = build_generic_symbol(f"{LIB}:LM74930-Q1", "U", "LM74930-Q1",
+                                parts.LM74930_Q1)
+    u_bk = build_generic_symbol(f"{LIB}:LM61460-Q1", "U", "LM61460-Q1",
+                                parts.LM61460_Q1)
+
+    # Simple column-major grid. The X1 connector units already occupy the
+    # left two thirds of the sheet, so the power tree gets its own band on
+    # the right; `flow` wraps to the next column rather than running off
+    # the bottom, and main() still checks every placement against the
+    # sheet bounds afterwards.
+    COL_W, ROW_H, USABLE_H = 78.0, 26.0, 470.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        """
+        Place the next part, advancing by its ACTUAL height.
+
+        A fixed row pitch is wrong here because the parts are wildly
+        different sizes - a 2-pin resistor next to the 24-pin LM74930-Q1,
+        which is taller than one row and silently overlapped its
+        neighbours on the first attempt. ERC cannot see overlapping
+        symbols, so this has to be right by construction.
+        """
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + USABLE_H:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    # --- input and protection -------------------------------------------
+    flow(conn3, "J2", "Power in",
+         {"VBAT": "VBAT_IN", "GND": "GND", "IGN": "IGN_SENSE"})
+    flow(fuse, "F1", "5A", {"1": "VBAT_IN", "2": "VBAT_F"})
+    flow(tvs, "D1", "TVS 33V", {"1": "VBAT_F", "2": "GND"})
+    flow(c, "C1", "100uF", {"1": "VBAT_F", "2": "GND"})
+
+    # RSENSE sits in the input path; CS+ taps it through RSET per the
+    # datasheet's "connect a 50-ohm resistor across CS+".
+    flow(r, "R1", "2m sense", {"1": "VBAT_F", "2": "SENSE_OUT"})
+    flow(r, "R2", "50R", {"1": "VBAT_F", "2": "CS_PLUS"})
+
+    # --- back-to-back FETs ----------------------------------------------
+    flow(nfet, "Q2", "NFET pass",
+         {"D": "SENSE_OUT", "G": "HGATE", "S": "COMMON"})
+    flow(nfet, "Q1", "NFET diode",
+         {"S": "COMMON", "G": "DGATE", "D": "+12V_PROT"})
+
+    # --- LM74930-Q1 ------------------------------------------------------
+    flow(u_fe, "U1", "LM74930-Q1", {
+        "DGATE": "DGATE", "A": "COMMON", "SW": "SW_SENSE",
+        "UVLO": "UVLO_DIV", "OV": "OV_DIV", "EN": "VBAT_F",
+        "MODE": "VBAT_F", "NC1": None, "TMR": "TMR",
+        "IMON": "IMON", "ILIM": "ILIM", "FLT": "PWR_FLT",
+        "GND": "GND", "HGATE": "HGATE", "OUT": "COMMON",
+        # OVCLAMP tied to OV selects clamp-with-circuit-breaker rather
+        # than plain disconnect. This one net is the whole reason the
+        # module rides through a load dump instead of rebooting.
+        "OVCLAMP": "OV_DIV", "NC2": None,
+        "ISCP": "+12V_PROT", "CS-": "SENSE_OUT", "CS+": "CS_PLUS",
+        "NC3": None, "VS": "VBAT_F", "CAP": "CAP_CP", "C": "+12V_PROT",
+    })
+
+    for ref, val, nets in [
+        ("C2", "100n CVS", {"1": "VBAT_F", "2": "GND"}),
+        ("C3", "100n CCAP", {"1": "CAP_CP", "2": "VBAT_F"}),
+        ("C4", "open CT", {"1": "TMR", "2": "GND"}),
+        ("R3", "RILIM", {"1": "ILIM", "2": "GND"}),
+        ("R4", "5k RMON", {"1": "IMON", "2": "GND"}),
+        ("R5", "OV top", {"1": "SW_SENSE", "2": "OV_DIV"}),
+        ("R6", "OV bot", {"1": "OV_DIV", "2": "GND"}),
+        ("R7", "UV top", {"1": "SW_SENSE", "2": "UVLO_DIV"}),
+        ("R8", "UV bot", {"1": "UVLO_DIV", "2": "GND"}),
+    ]:
+        flow(c if ref.startswith("C") else r, ref, val, nets)
+
+    # --- LM61460-Q1 5 V buck ---------------------------------------------
+    flow(u_bk, "U2", "LM61460-Q1", {
+        "BIAS": "+5V", "VCC": "VCC_LDO", "AGND": "GND", "FB": "FB_5V",
+        "PGOOD": "PG_5V", "RT": "RT_5V", "EN/SYNC": "EN_5V",
+        "VIN1": "+12V_PROT", "PGND1": "GND", "SW": "SW_5V",
+        "PGND2": "GND", "VIN2": "+12V_PROT",
+        "RBOOT": "BOOT_R", "CBOOT": "BOOT_C",
+    })
+    for ref, val, lib, nets in [
+        ("C5", "10u in", c, {"1": "+12V_PROT", "2": "GND"}),
+        ("C6", "1u VCC", c, {"1": "VCC_LDO", "2": "GND"}),
+        ("C7", "100n boot", c, {"1": "BOOT_C", "2": "SW_5V"}),
+        ("R9", "RBOOT", r, {"1": "BOOT_R", "2": "BOOT_C"}),
+        ("L1", "2.2u", l, {"1": "SW_5V", "2": "+5V"}),
+        ("C8", "44u out", c, {"1": "+5V", "2": "GND"}),
+        ("R10", "FB top", r, {"1": "+5V", "2": "FB_5V"}),
+        ("R11", "FB bot", r, {"1": "FB_5V", "2": "GND"}),
+        ("R12", "RT", r, {"1": "RT_5V", "2": "GND"}),
+        ("R13", "EN top", r, {"1": "+12V_PROT", "2": "EN_5V"}),
+        ("R14", "EN bot", r, {"1": "EN_5V", "2": "GND"}),
+        # FLT and PGOOD are open-drain and do nothing without these.
+        ("R15", "100k FLT pu", r, {"1": "PWR_FLT", "2": "+5V"}),
+        ("R16", "100k PG pu", r, {"1": "PG_5V", "2": "+5V"}),
+    ]:
+        flow(lib, ref, val, nets)
+
+
 def main():
     x1_lib = build_x1_symbol()
-    gnd_lib = build_power_symbol("GND", is_gnd=True)
-    v5_lib = build_power_symbol("+5V", is_gnd=False)
+    gnd_lib = rail("GND")
+    v5_lib = rail("+5V")
     flag5_lib = build_pwr_flag("+5V")
     flaggnd_lib = build_pwr_flag("GND")
 
@@ -308,10 +558,12 @@ def main():
                 if name == "GND":
                     place(gnd_lib, f"#PWR{pin}", "GND", wx, wy, hide_ref=True)
                     gnd_net_xy.append((wx, wy))
+                    power_net_points.setdefault("GND", (wx, wy))
                     n_gnd += 1
                 else:
                     place(v5_lib, f"#PWR{pin}", "+5V", wx, wy, hide_ref=True)
                     v5_net_xy.append((wx, wy))
+                    power_net_points.setdefault("+5V", (wx, wy))
                     n_v5 += 1
             elif label.startswith("E"):
                 # Deliberately unused. This project's KiCad notes record
@@ -321,14 +573,17 @@ def main():
                                                 uuid=U()))
                 n_nc += 1
 
+    build_power_tree(610.0, 55.0)
+
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from
     # off-sheet with PWR_FLAGs - placed COINCIDENT with a real point on
     # each net, because this project's KiCad notes record that a flag
     # relying only on name-based net merging, with no wire or coincident
     # point touching it, does not satisfy that ERC check.
-    place(flag5_lib, "#FLG1", "PWR_FLAG +5V", *v5_net_xy[0], hide_ref=True)
-    place(flaggnd_lib, "#FLG2", "PWR_FLAG GND", *gnd_net_xy[0], hide_ref=True)
+    for n, net in enumerate(sorted(power_net_points), start=1):
+        place(build_pwr_flag(net), f"#FLG{n}", f"PWR_FLAG {net}",
+              *power_net_points[net], hide_ref=True)
 
     # Sheet extent sanity check - this project's KiCad notes record content
     # silently running off a fixed-size sheet with no warning in the editor.

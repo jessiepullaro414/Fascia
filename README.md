@@ -20,24 +20,29 @@ from it:
 
 ## Status
 
-**Schematic started — the module connector is in, the rest is not.**
+**Schematic in progress — connector and power tree wired.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
-containing the Verdin iMX95 X1 connector. No PCB yet.
+containing the Verdin iMX95 X1 connector, the 12 V automotive front end
+and the main 5 V buck. No PCB yet.
 
-`kicad-cli sch erc` reports **50 violations, all `pin_not_connected`** —
-and that is the expected, correct result at this stage. They are exactly
-the 50 pins in the control, display and communications banks (plus
-`VCC_BACKUP`, `PWR_1V8_MOCI` and `PMIC_PGOOD`) that the not-yet-existing
-power tree, bridge, transceiver and panel connector will terminate. The
-build script asserts that the unconnected set matches that expectation,
-so the count going up is a real regression rather than noise.
+`kicad-cli sch erc` reports **51 violations, all expected**: 50 X1 pins
+in the control, display and communications banks awaiting the bridge,
+transceiver, codec and panel connector, plus `IGN_SENSE`, which has no
+destination until the ignition-sense path reaches a module ADC pin.
 
 What is already final:
 
 - all 260 X1 pins exist, banked into 6 units
-- 47 GND pins tied to ground, 5 VCC pins tied to +5V, both rails carrying
-  PWR_FLAGs since no regulator is on the sheet yet
+- 47 GND pins tied to ground, 5 VCC pins tied to +5V
 - 158 unused pins carrying real `NoConnect` items
+- **LM74930-Q1 front end fully wired** — back-to-back FETs with `A` and
+  `OUT` on the shared source node, sense resistor with its 50 Ω tap into
+  `CS+`, `OVCLAMP` tied to `OV` for clamp-with-breaker rather than plain
+  disconnect, and the OV/UVLO dividers, timer, ILIM and IMON networks
+- **LM61460-Q1 5 V buck fully wired** — `BIAS` to the output rail (valid
+  because Vout ≤ 12 V), boot network through `RBOOT`, FB and EN dividers,
+  `RT`, and pull-ups on the open-drain `FLT` and `PGOOD` outputs
+- every pin on both regulators either netted or explicitly NoConnected
 
 What exists right now:
 
