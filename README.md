@@ -247,26 +247,63 @@ needed:
 
 Real parts found, with the specs that actually drive the board design:
 
-| Part | Res | Nits | Interface | Backlight | Temp |
-| --- | --- | --- | --- | --- | --- |
-| CDTech S101BWU78EP | 1920×1200 | 1000 | LVDS, 45-pin FPC | 4 strings × 10 LED, 240 mA, 27–34 V | **−20 to +70 °C** |
-| CDTech S101HWX101ED | 1280×800 | 1000 | 4-lane LVDS, 40-pin FPC | 9 strings × 5 LED, 360 mA, 13.5–17 V | −30 to +80 °C |
+| Part | Res | Nits | Interface | Touch | Bonded | Temp |
+| --- | --- | --- | --- | --- | --- | --- |
+| **iFan IF101GRL192-120B** | 1920×1200 | 1000 | LVDS, 60-pin | **PCAP inc.** | ? | **−30 to +80 °C** |
+| Riverdi RVT101HVLNWC00-B | 1280×800 | ~1000 | LVDS | PCAP inc. | **yes** | industrial |
+| CDTech S101BWU78EP | 1920×1200 | 1000 | LVDS, 45-pin FPC | no | no | −20 to +70 °C |
+| CDTech S101HWX101ED | 1280×800 | 1000 | 4-lane LVDS, 40-pin FPC | no | no | −30 to +80 °C |
+| CDTech S101HWX80NP-FC81 | 1280×800 | 350 | 1-ch LVDS, 30-pin | ILI2511 (USB) | no (G+G) | −20 to +70 °C |
+| AUO G101UAN02.0 | 1920×1200 | 800 | **MIPI** | no | no | **−10 to +60 °C** |
 
-Two things to carry forward:
+**The market bifurcates, and neither half is the full target spec:**
+
+- You can get **1920×1200 + 1000 nit + touch** (iFan), but optical
+  bonding is unconfirmed and there is no public datasheet — it is a
+  contact-the-vendor part.
+- Or you can get **productized optical bonding + PCAP + real datasheets
+  + distributor stock** (Riverdi), but only at 1280×800.
+
+The full combination is realistically a **semi-custom order with MOQ**,
+not an off-the-shelf purchase.
+
+AUO's G101UAN02.0 is ruled out on two counts despite being the obvious
+1920×1200 name: it is **MIPI, not LVDS** (which would put D-PHY on the
+dash ribbon, the thing this whole design avoids), and −10 to +60 °C is
+unusable in a car.
+
+Three things to carry forward:
 
 1. **The backlight boost designs are not interchangeable** — 27–34 V at
-   240 mA versus 13.5–17 V at 360 mA are different converters. The panel
-   must be chosen before the backlight circuit is designed.
-2. **The high-res part has the worse temperature rating.** −20 to +70 °C
-   is marginal for a dash that bakes in the sun, and is worse than both
-   the Verdin module (−40 to +85 °C) and the 1280×800 panel. A properly
-   automotive-qualified 1920×1200 panel (AUO/Tianma/Innolux automotive
-   lines) would fix this but is harder to buy in small quantity.
+   240 mA versus 13.5–17 V at 360 mA versus 5 V at 530 mA are three
+   different converters. The panel must be chosen before the backlight
+   circuit is designed. iFan publishes only a total figure (9.32 W), so
+   the string configuration has to be asked for.
+2. **Temperature does not track resolution.** CDTech's 1920×1200 part is
+   −20 to +70 °C while their 1280×800 is −30 to +80 °C. A dash bakes in
+   sun, so this is a real selection criterion, not a footnote — it is the
+   main reason the iFan part leads.
+3. **Touch is often USB, not I2C.** Both CDTech modules with touch use
+   USB controllers (ILI2511), and iFan lists "USB/I2C". This matters —
+   see below.
 
-Neither part includes touch or optical bonding as standard — both are
-semi-custom adders. The full target spec (1920×1200, 1000 nit, optically
-bonded, PCAP touch, automotive temp) is realistically a **semi-custom
-order with MOQ**, not an off-the-shelf purchase.
+### Touch interface: USB may beat I2C over this cable run
+
+The original plan assumed I2C touch. The market says otherwise, and on
+reflection USB is probably the better engineering choice here anyway:
+
+- **I2C is single-ended** and was designed for on-board use. Over 20 cm
+  it is fine; over a metre it is marginal — bus capacitance eats the
+  rise time and there is no noise rejection in a car's environment.
+- **USB is differential and designed for cables.** A metre is nothing.
+  It also arrives as a standard HID device, so Android needs no custom
+  touch driver or device-tree work.
+- Cost is one differential pair on the ribbon instead of two
+  single-ended wires, and a USB host port on the carrier — which the
+  Verdin already has.
+
+Decision still open, but it should be made on cable length, not on
+which is simpler on paper.
 
 ### Panel quality matters more than resolution here
 
@@ -340,10 +377,13 @@ Carrier board blocks:
 Panel board blocks:
 
 - Ribbon connector from the carrier.
-- 40-pin LVDS panel FFC connector.
-- Capacitive touch controller (I2C back down the ribbon) — the controller
-  has to live at the panel, since capacitive sensing will not tolerate a
-  metre of cable between controller and sensor.
+- Panel LVDS FFC connector — pin count set by the chosen panel (the
+  leading candidate uses 60-pin).
+- Capacitive touch controller — must live at the panel, since capacitive
+  sensing will not tolerate a metre of cable between controller and
+  sensor. Most candidate modules integrate it already. Interface back
+  down the ribbon is **USB or I2C, still to be decided** (see "Touch
+  interface" above).
 - Backlight LED string connector.
 
 ## How it's built
@@ -373,11 +413,23 @@ separate LVDS table on page 42.
   mechanical) depends on a specific 10.1" part number. Needs to be picked
   before the schematic is meaningful. Target spec is **1920×1200 (16:10),
   dual-channel LVDS, 24-bit, ~1000 nit, optically bonded, IPS,
-  automotive temperature range**.
-- **That exact panel spec is likely a semi-custom order.** Neither
-  candidate found so far includes touch or optical bonding as standard,
-  and the one 1920×1200 part located is only −20 to +70 °C. Expect MOQ
-  and lead time rather than an off-the-shelf purchase.
+  automotive temperature range**. Leading candidate is the
+  **iFan IF101GRL192-120B**; see the comparison table above.
+- **Questions to put to iFan before committing** — none are answerable
+  from their public page:
+  - Is optical bonding available, and at what MOQ?
+  - LVDS single or dual channel? (1920×1200 at 24 bpp requires dual, so
+    this is really a confirmation, but the 60-pin connector needs a
+    pinout either way.)
+  - Backlight string configuration — volts and milliamps, not just the
+    published 9.32 W total. The boost converter cannot be designed
+    without it.
+  - Touch controller IC, and is the interface USB or I2C?
+  - Connector part number, and is a mating FFC/cable available?
+  - Operating temperature is quoted as −30 to +80 °C; confirm storage
+    range and whether an automotive-qualified variant exists.
+- **Touch interface undecided** — USB versus I2C, see the section above.
+  Leaning USB on cable-length grounds.
 - **DSI timing closes on paper but is not yet proven on hardware.** Every
   number in the chain is now confirmed against a primary source and
   1920×1200 fits, but with only ~7% headroom on the bridge's DSI input
