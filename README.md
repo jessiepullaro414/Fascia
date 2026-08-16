@@ -401,12 +401,54 @@ memory. Two of them corrected an earlier wrong guess, noted inline.
 | 12 V → 5 V buck | **LM61460-Q1** | AEC-Q100 grade 1, 3–36 V in (42 V transient), 6 A, synchronous, low-EMI with spread spectrum |
 | CAN FD | **TCAN1044V-Q1** | AEC-Q100 grade 1, VIO 1.7–5.5 V with explicit 1.8 V support, CAN FD to 8 Mbps, ±58 V bus fault protection |
 | DSI→LVDS bridge | **SN65DSI85-Q1** | AEC-Q100 grade 2 (−40/+105 °C), single 1.8 V rail, HTQFP-64 |
+| Audio codec | **PCM3168A-Q1** | AEC-Q100, 24-bit 6-in/8-out codec, differential outputs, I2S/TDM, 104 dB, 64-HTQFP |
+| USB VBUS switch | **TPS2557-Q1** | Automotive, current limit adjustable 500 mA–5 A, FAULT output, dual thermal sensing |
+| Wi-Fi / Bluetooth | **on-module** (u-blox MAYA-W260-00B) | Wi-Fi 6, Bluetooth Classic/LE 5.4, two U.FL connectors — comes with the Verdin `WB` variants |
 
 **The module sets two hard constraints** that drove these choices:
 
 - **VCC is 3.135–5.5 V**, so the main rail is 5.0 V.
 - **Verdin I/O is 1.8 V logic** (absolute max 2.1 V). This is the
   constraint that eliminates most automotive CAN transceivers.
+
+#### The 5 V rail needs splitting
+
+Rough budget, with the module figure still a placeholder:
+
+| Load | Estimate |
+| --- | --- |
+| Verdin iMX95 | ~3 A @ 5 V (unknown — see open items) |
+| USB-C charging | 3 A @ 5 V |
+| Bridge, codec, CAN, misc | ~0.5 A |
+| **Total on 5 V** | **~6.5 A** |
+
+That is over the LM61460-Q1's 6 A, so **two supplies** rather than one
+bigger one: a main rail for the module and peripherals, and a second
+dedicated to USB VBUS. Splitting is the better design anyway — a phone
+drawing a fault current should not be able to brown out the SoC and
+reboot Android. Using the same part twice also keeps the BOM narrow.
+
+The backlight boost is deliberately *not* on the 5 V rail — it runs from
+the protected 12 V directly, since the panel wants ~27–34 V and routing
+that through 5 V would waste a conversion and eat the budget.
+
+#### Bluetooth comes free with the module
+
+The Verdin `WB` variants carry a u-blox **MAYA-W260-00B**: Wi-Fi 6,
+**Bluetooth Classic / LE 5.4**, IEEE 802.15.4, and **two U.FL antenna
+connectors already on the SoM**. That means no RF design, no antenna
+matching and no radio certification work on this carrier — just two U.FL
+cables out to external antennas.
+
+Bluetooth Classic covers A2DP for streaming and HFP for hands-free calls.
+Wi-Fi plus Bluetooth together is also exactly what **wireless CarPlay and
+Android Auto** need, so the USB-C port is for wired mode and charging
+rather than being the only way in.
+
+Cost to record: the datasheet carries separate pin tables for "modules
+without Wi-Fi", so the `WB` variant consumes some UART and ADC pins that
+would otherwise reach the carrier. The variant has to be locked before
+the connector banks are final.
 
 #### Two corrections worth recording
 
@@ -492,9 +534,21 @@ concludes the module has no LVDS at all.
 
 ## Planned scope
 
-Display + touch + CAN. Deliberately not a full infotainment board on the
-first spin — no audio amp, USB, wireless, camera or Ethernet. Headers are
-planned so those can grow in later.
+A head unit that **displays and sources audio but does not amplify it**.
+Scope revised 2026-08-16 from the original display+touch+CAN.
+
+In scope: display, touch, CAN to `ecu-pcb`, Bluetooth, line-level
+pre-outs to an external amplifier, a microphone for calls and voice
+control, and USB-C for wired CarPlay / Android Auto plus phone charging.
+
+Explicitly **not** in scope: any power amplifier. This board drives no
+speakers — it feeds an existing automotive amp over RCA-level pre-outs.
+That single decision keeps the highest-current, highest-heat, highest-EMI
+subsystem off the board entirely, which matters in a sealed dash
+enclosure that already contains a 1000-nit backlight.
+
+Also still out of scope: reversing camera, automotive Ethernet, and any
+radio tuner.
 
 Carrier board blocks:
 
@@ -507,6 +561,20 @@ Carrier board blocks:
   controlled, length-matched on-board runs; the bridge sits right at the
   panel connector so the DSI never reaches the ribbon.
 - Bridge configured over `I2C_2_DSI`, enabled by `GPIO_9_DSI`.
+- **Audio: PCM3168A-Q1 codec** on I2S/TDM from the module. Five of its
+  eight DAC channels drive the pre-outs (front L/R, rear L/R, mono sub);
+  one ADC channel takes the microphone. Differential outputs, which is
+  the right choice for running line level across a car to an amp.
+- **Microphone connector** for a remote mic mounted near the A-pillar or
+  headliner, with bias. Placement beats mic quality in a car by a wide
+  margin, which is why it is off-board.
+- **USB-C port** for wired CarPlay / Android Auto: USB 2.0 data to the
+  module's `USB_1` port, and VBUS from a **TPS2557-Q1** switch whose EN
+  and FAULT map onto `USB_1_EN` and `USB_1_OC#`. CC1/CC2 carry Rp
+  resistors advertising 3 A as a downstream-facing port — no PD
+  controller and no negotiation firmware.
+- Two **U.FL antenna** pigtails from the module's on-board wireless out
+  to external Wi-Fi/Bluetooth antennas.
 - Dual-channel LVDS out of the bridge to the panel connector, with
   common-mode chokes and ESD protection on each of the 10 pairs.
 - Backlight boost driver, PWM-dimmed via `PWM_3_DSI`, enabled by
