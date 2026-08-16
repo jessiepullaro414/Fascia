@@ -473,14 +473,30 @@ temperature grades with **no AEC-Q100 qualification**, which fails this
 family's standard (see `ecu-pcb`, where the last unqualified part was
 deliberately swapped out). The LM74930-Q1 is explicitly `-Q1`.
 
-**The tradeoff that buys, and its risk:** the LM74930-Q1 protects against
-overvoltage by *disconnecting the load*, not by clamping through it. On a
-real load dump that means the 5 V rail collapses and the module reboots —
-an Android boot, not a flicker. The design intent is therefore that the
-**TVS absorbs the transient** and the LM74930-Q1's overvoltage cutoff
-sits above the TVS clamp as a last-resort backstop, so ordinary events
-never reach the disconnect threshold. That makes TVS sizing a real design
-task rather than a formality; see "Known open items".
+**Correction — the LM74930-Q1 does clamp through.** An earlier revision
+of this file claimed it protects only by disconnecting the load, and
+warned that a load dump would therefore collapse the 5 V rail and force
+an Android reboot. That was wrong, and reading the pin table and spec
+table settled it:
+
+- pin 16 is **`OVCLAMP`**: "connect this pin to OV pin for overvoltage
+  clamp with circuit breaker (timer) functionality";
+- `OVCLAMP` has its own rising/falling thresholds (0.59 V / 0.45 V),
+  separate from the plain `OV` disconnect thresholds;
+- the timer spec includes **`I(TMR_SRC_OVCLAMP)`, "TMR source current
+  during overvoltage clamp"** — a dedicated clamp state, not a
+  disconnect;
+- and `N(A_R_Count)` gives **32 auto-retry cycles**.
+
+So it regulates the pass FET through an overvoltage event for a period
+set by the TMR capacitor, then opens the breaker if the event outlasts
+it, then auto-retries. That is genuine surge-stopper behaviour, and it
+removes the reboot risk previously recorded here.
+
+What remains real is that the clamp is **timed, not indefinite**: the TMR
+capacitor has to be sized to ride out a 200 ms load dump, and the pass
+FET has to survive dissipating it for that long. FET SOA selection is
+therefore a genuine design task — see "Known open items".
 
 For scale, the LTC4364 datasheet gives the industry-standard transient
 shapes: a general automotive transient of tr = 10 µs / VPK = 80 V /
@@ -654,13 +670,16 @@ separate LVDS table on page 42.
   across the rest of this family. Acceptable for a cabin/dash mount but a
   real deviation from the family's engine-bay-rated standard, and worth a
   deliberate decision rather than an accident.
-- **TVS sizing is a real open task, not a formality.** Because the
-  LM74930-Q1 disconnects rather than clamps through, the TVS is what
-  actually keeps the display alive during a transient. It has to absorb a
-  60 V / 200 ms load dump from an unsuppressed 1972 alternator, which is
-  a lot of energy — a 3 kW SMDJ-class part may not be enough. If sizing
-  does not close, the fallback is to accept the reboot, or to revisit the
-  clamp-through LTC4364 and its lack of AEC-Q100.
+- **Pass-FET SOA and TMR sizing.** The LM74930-Q1's overvoltage clamp is
+  timed rather than indefinite, so the TMR capacitor must be sized to
+  ride out a 60 V / 200 ms load dump, and the pass MOSFET must survive
+  dissipating that event inside its safe operating area. Neither number
+  is chosen yet, and SOA is the one most likely to drive the FET choice.
+- **Watch the LM74930-Q1 thermal pad.** Its datasheet says the exposed
+  pad (RTN) must be left **floating — explicitly "Do Not connect to GND
+  plane"**. That is the opposite of the near-universal VQFN convention,
+  so both the footprint and the PCB generator need a deliberate exception
+  or the part will be destroyed by a routine ground stitch.
 - **Verdin power consumption is still unknown.** The module datasheet
   gives no current figure, deferring to the Verdin Family Specification,
   which has not been pulled. The 5 V rail is provisionally sized on the
