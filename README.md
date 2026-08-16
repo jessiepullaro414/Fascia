@@ -20,8 +20,26 @@ from it:
 
 ## Status
 
-**Early — research and connector modelling only.** No schematic or PCB
-has been generated yet. What exists right now:
+**Schematic started — the module connector is in, the rest is not.**
+`build_schematic.py` generates a real, KiCad-loadable schematic
+containing the Verdin iMX95 X1 connector. No PCB yet.
+
+`kicad-cli sch erc` reports **50 violations, all `pin_not_connected`** —
+and that is the expected, correct result at this stage. They are exactly
+the 50 pins in the control, display and communications banks (plus
+`VCC_BACKUP`, `PWR_1V8_MOCI` and `PMIC_PGOOD`) that the not-yet-existing
+power tree, bridge, transceiver and panel connector will terminate. The
+build script asserts that the unconnected set matches that expectation,
+so the count going up is a real regression rather than noise.
+
+What is already final:
+
+- all 260 X1 pins exist, banked into 6 units
+- 47 GND pins tied to ground, 5 VCC pins tied to +5V, both rails carrying
+  PWR_FLAGs since no regulator is on the sheet yet
+- 158 unused pins carrying real `NoConnect` items
+
+What exists right now:
 
 - `tools/extract_verdin_pinout.py` — extracts the full 260-pin Verdin
   iMX95 X1 connector pinout from Toradex's own hardware datasheet.
@@ -31,6 +49,25 @@ has been generated yet. What exists right now:
 - `verdin_x1.py` — functional banking of those 260 pins into multi-unit
   symbol units, with a verifier that proves the banking is a true
   partition of the connector.
+- `build_schematic.py` — generates `Fascia.kicad_sch`, `Fascia.kicad_sym`,
+  `sym-lib-table` and (on first run only) `Fascia.kicad_pro`.
+
+Three things that were needed to get ERC down from 268 findings to the
+50 real ones, recorded because each cost a debug cycle:
+
+1. **Power symbols must touch the net graphically.** A power symbol's own
+   pin sits at its local origin with zero length, so placing it *near* a
+   connector pin leaves both dangling — 155 `pin_not_connected` findings.
+   The fix is a short stub wire from the pin out to the symbol, which
+   also keeps the symbol graphic off the pin name.
+2. **PWR_FLAGs need the same graphical reachability.** A flag placed in
+   isolation, relying on name-based net merging, does not satisfy
+   `power_pin_not_driven` (54 findings). Placing each flag on a real
+   point of its net clears it.
+3. **`kicad-cli` needs a `.kicad_pro` to resolve `${KIPRJMOD}`.** Without
+   one it cannot find the project-local `sym-lib-table` and reports one
+   `lib_symbol_issues` warning per placed symbol (60 findings), even
+   though the symbols are embedded in the schematic and perfectly valid.
 
 Everything below the "Design decisions" section is a plan, not a
 description of something that exists. See "Known open items".

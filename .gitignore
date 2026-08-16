@@ -26,3 +26,8 @@ tools/*.jar
 # generic
 .DS_Store
 Thumbs.db
+
+# KiCad local editor state and generated ERC reports - regenerated,
+# not source.
+*.kicad_prl
+*-erc.rpt

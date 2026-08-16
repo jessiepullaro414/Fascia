@@ -74,6 +74,45 @@ def banks():
     return out
 
 
+# A unit's pins are split down its left and right sides, so its drawn
+# height is about (pins / 2) * 2.54 mm. 80 pins is ~100 mm per side, which
+# leaves room to place several units on one sheet. Bank E is the only one
+# that exceeds this today.
+MAX_PINS_PER_UNIT = 80
+
+
+def units():
+    """
+    The actual multi-unit symbol units, in schematic order.
+
+    Returns [(unit_label, description, [(pin, name), ...]), ...] with unit
+    number = index + 1. Banks larger than MAX_PINS_PER_UNIT are split
+    across several units so no single one is too tall to draw; the split
+    is done here rather than in the banking rules so the *semantic*
+    grouping stays readable.
+    """
+    out = []
+    b = banks()
+    for letter in ("A", "B", "C", "D", "E"):
+        entries = b[letter]
+        if not entries:
+            continue
+        if len(entries) <= MAX_PINS_PER_UNIT:
+            out.append((letter, UNIT_NAMES[letter], entries))
+            continue
+        # Split evenly rather than filling to the cap, so the pieces are
+        # balanced instead of one full unit and one nearly empty.
+        nparts = -(-len(entries) // MAX_PINS_PER_UNIT)
+        size = -(-len(entries) // nparts)
+        for i in range(nparts):
+            chunk = entries[i * size:(i + 1) * size]
+            if chunk:
+                out.append((f"{letter}{i + 1}",
+                            f"{UNIT_NAMES[letter]} ({i + 1}/{nparts})",
+                            chunk))
+    return out
+
+
 def verify():
     """
     Prove the banking is a true partition of the connector.
@@ -120,6 +159,16 @@ def verify():
         if excluded not in names_e:
             problems.append(f"{excluded} should be in the unused bank, is not")
 
+    # Splitting banks into units must not lose or duplicate a pin either.
+    u_pins = [pin for _, _, entries in units() for pin, _ in entries]
+    if sorted(u_pins) != list(range(1, 261)):
+        problems.append(f"units() does not cover 1..260 exactly once "
+                        f"({len(u_pins)} pins, {len(set(u_pins))} distinct)")
+    for label, _, entries in units():
+        if len(entries) > MAX_PINS_PER_UNIT:
+            problems.append(f"unit {label} has {len(entries)} pins, over the "
+                            f"{MAX_PINS_PER_UNIT} cap")
+
     return problems
 
 
@@ -146,6 +195,11 @@ if __name__ == "__main__":
             for pin, name in entries:
                 print(f"   {pin:3d}  {name}")
 
+    print("\n=== symbol units ===")
+    for i, (label, desc, entries) in enumerate(units(), start=1):
+        print(f"   unit {i} ({label}): {len(entries):3d} pins  "
+              f"~{len(entries) / 2 * 2.54:5.1f} mm/side   {desc}")
+
     print()
     if problems:
         print("BANKING INVALID:")
@@ -153,4 +207,4 @@ if __name__ == "__main__":
             print("  -", p)
         sys.exit(1)
     print(f"banking OK: {sum(len(v) for v in b.values())} pins partitioned across "
-          f"{len([k for k, v in b.items() if v])} units")
+          f"{len(b)} banks -> {len(units())} symbol units")
