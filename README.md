@@ -20,17 +20,57 @@ from it:
 
 ## Status
 
-**Early — research and pinout extraction only.** No schematic or PCB has
-been generated yet. What exists right now:
+**Early — research and connector modelling only.** No schematic or PCB
+has been generated yet. What exists right now:
 
 - `tools/extract_verdin_pinout.py` — extracts the full 260-pin Verdin
   iMX95 X1 connector pinout from Toradex's own hardware datasheet.
 - `verdin_pinout.py` — the generated result: all 260 pins, 47 GND, 5 VCC,
   and the 20 LVDS pins, cross-checked against a second independent table
   in the same document.
+- `verdin_x1.py` — functional banking of those 260 pins into multi-unit
+  symbol units, with a verifier that proves the banking is a true
+  partition of the connector.
 
 Everything below the "Design decisions" section is a plan, not a
 description of something that exists. See "Known open items".
+
+### Why X1 is banked into units
+
+A 260-pin connector cannot be one schematic symbol — at 2.54 mm pitch a
+single block is ~330 mm tall, taller than any sheet this project uses.
+KiCad's answer is a multi-unit symbol, so `verdin_x1.py` assigns each pin
+to a unit based on how *this board* uses the connector:
+
+| Unit | Pins | Contents |
+| --- | --- | --- |
+| A | 55 | Power and ground |
+| B | 16 | Control, sequencing, JTAG, tamper |
+| C | 15 | Display — the DSI link to the bridge, plus backlight control |
+| D | 16 | Communications — CAN to `ecu-pcb`, I2C, USB 2.0 for touch |
+| E | 158 | Unused on this board (gets NoConnect items) |
+
+Banks are derived from pin *names* rather than hand-listed pin numbers,
+so re-running the extractor against a newer datasheet revision cannot
+silently desynchronise the two files. That only works if the rules stay
+exhaustive, which `verify()` enforces: every pin exactly once, nothing
+invented, nothing dropped, plus explicit assertions on the two groupings
+most worth getting right —
+
+- the **display bank** must be exactly the 15 pins from datasheet
+  Table 22, asserted by number rather than trusted to a pattern;
+- the **USB split** must put the USB 2.0 data pair in the comms bank and
+  SuperSpeed in the unused bank. This board's only USB is a 2.0 host port
+  for the panel's touch controller, so the SS pairs are unused *on
+  purpose*. Worth an explicit rule because they appear under two
+  different naming styles — Verdin-standard `USB_2_SS*` and
+  module-specific `USB1_TX1_*`/`USB1_RX1_*` — and a single `USB_` pattern
+  silently catches one and misses the other.
+
+Bank E is not filler. Per this project's KiCad notes a deliberately
+unused pin needs a real `NoConnect` item, not a stub label, or ERC
+reports it as a dangling/isolated label — so the unused pins have to be
+enumerated as carefully as the used ones.
 
 ## Why this SoC, and why not the one I started with
 
@@ -247,9 +287,17 @@ needed:
 
 Real parts found, with the specs that actually drive the board design:
 
+**Selected: iFan IF101GRL192-120B** (2026-08-16), pending the vendor
+datasheet and pricing. Chosen mainly on temperature — it is a full 10 °C
+better at both ends than the other 1920×1200 candidate, which is the
+difference between reliable and marginal on a sun-baked dash — with 89%
+DCI-P3 gamut as a real bonus for image quality.
+
+<https://ifan-display.com/product/10-1-inch-touch-panel-1000-nits-wide-color-gamut-1920x1200/>
+
 | Part | Res | Nits | Interface | Touch | Bonded | Temp |
 | --- | --- | --- | --- | --- | --- | --- |
-| **iFan IF101GRL192-120B** | 1920×1200 | 1000 | LVDS, 60-pin | **PCAP inc.** | ? | **−30 to +80 °C** |
+| **iFan IF101GRL192-120B** ← selected | 1920×1200 | 1000 | LVDS, 60-pin | **PCAP inc.** | ? | **−30 to +80 °C** |
 | Riverdi RVT101HVLNWC00-B | 1280×800 | ~1000 | LVDS | PCAP inc. | **yes** | industrial |
 | CDTech S101BWU78EP | 1920×1200 | 1000 | LVDS, 45-pin FPC | no | no | −20 to +70 °C |
 | CDTech S101HWX101ED | 1280×800 | 1000 | 4-lane LVDS, 40-pin FPC | no | no | −30 to +80 °C |
@@ -408,15 +456,17 @@ separate LVDS table on page 42.
 ## Known open items
 
 - No schematic, PCB, footprints or BOM yet.
-- **Panel not yet chosen.** Everything downstream (LVDS mapping, colour
-  depth, backlight string voltage and current, touch controller,
-  mechanical) depends on a specific 10.1" part number. Needs to be picked
-  before the schematic is meaningful. Target spec is **1920×1200 (16:10),
-  dual-channel LVDS, 24-bit, ~1000 nit, optically bonded, IPS,
-  automotive temperature range**. Leading candidate is the
-  **iFan IF101GRL192-120B**; see the comparison table above.
-- **Questions to put to iFan before committing** — none are answerable
-  from their public page:
+- **Panel selected but its datasheet is not yet in hand.** The
+  **iFan IF101GRL192-120B** is chosen; a request for datasheet and
+  pricing went to the vendor on 2026-08-16. Until it arrives, anything
+  that depends on the panel's real numbers is blocked:
+  - the backlight boost converter (no string V/I published)
+  - the panel-side connector footprint and pinout (60-pin, mapping
+    unknown)
+  - the touch link (USB vs I2C, see above)
+  - bezel/mechanical
+- **Questions to put to iFan** — none are answerable from their public
+  page:
   - Is optical bonding available, and at what MOQ?
   - LVDS single or dual channel? (1920×1200 at 24 bpp requires dual, so
     this is really a confirmation, but the 60-pin connector needs a
@@ -444,6 +494,10 @@ separate LVDS table on page 42.
   across the rest of this family. Acceptable for a cabin/dash mount but a
   real deviation from the family's engine-bay-rated standard, and worth a
   deliberate decision rather than an accident.
+- **Unit E may need splitting.** At 158 pins it is ~200 mm per side,
+  which fits an A3 sheet only marginally. Splitting it into two units of
+  ~79 is the likely fix, but the real constraint will not be known until
+  the symbol generator exists.
 - Verdin iMX95 datasheet is marked *Preliminary — Subject to change*;
   the pinout should be re-extracted against a final revision before fab.
 - Carrier must follow the Verdin Carrier Board Design Guide (Toradex doc
