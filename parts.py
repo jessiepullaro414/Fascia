@@ -53,6 +53,10 @@ LM74930_Q1 = [
     (22, "VS",      "power_in"),    # 100 nF to GND
     (23, "CAP",     "passive"),     # charge pump; 100 nF across CAP and VS
     (24, "C",       "passive"),     # ideal-diode cathode (that FET's drain)
+    # Pad 25 is the exposed pad. It MUST be left floating on this part -
+    # see the GOTCHA above. It exists here so the schematic can carry a
+    # deliberate NoConnect rather than leaving a netless pad by omission.
+    (25, "EP",      "passive"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -148,6 +152,7 @@ TLV767_Q1 = [
     (6, "GND2", "power_in"),
     (7, "NC2", "no_connect"),
     (8, "IN",  "power_in"),
+    (9, "EP",  "passive"),      # exposed pad; grounded on this part
 ]
 
 
@@ -225,6 +230,7 @@ SN65DSI85_Q1 = [
     (61, "B_Y0P",  "output"), (62, "B_Y0N", "output"),
     (63, "VCC12",  "power_in"),
     (64, "ADDR",   "input"),
+    (65, "EP",     "passive"),      # PowerPAD is reference ground here
 ]
 
 
@@ -311,6 +317,7 @@ PCM3168A_Q1 = [
     (62, "VIN5P", "input"),
     (63, "VIN6N", "input"),
     (64, "VIN6P", "input"),
+    (65, "EP", "passive"),          # PowerPAD, connected to ANALOG ground
 ]
 
 
@@ -378,6 +385,7 @@ TPS2557_Q1 = [
     (6, "OUT1",  "power_out"),
     (7, "OUT2",  "passive"),
     (8, "FAULT", "open_collector"),
+    (9, "EP",    "passive"),        # internally GND, must also connect
 ]
 
 
@@ -401,29 +409,29 @@ def verify():
 
     # Both parts are known-size packages; assert the counts so a careless
     # edit that drops a pin is caught here rather than in the netlist.
-    if len(LM74930_Q1) != 24:
-        problems.append(f"LM74930_Q1 should have 24 pins, has {len(LM74930_Q1)}")
+    if len(LM74930_Q1) != 25:
+        problems.append(f"LM74930_Q1 should have 25 pins (24 + exposed pad), has {len(LM74930_Q1)}")
     if len(TCAN1044V_Q1) != 8:
         problems.append(f"TCAN1044V_Q1 should have 8 pins, "
                         f"has {len(TCAN1044V_Q1)}")
     if len(LM61460_Q1) != 14:
         problems.append(f"LM61460_Q1 should have 14 pins, "
                         f"has {len(LM61460_Q1)}")
-    if len(TLV767_Q1) != 8:
-        problems.append(f"TLV767_Q1 should have 8 pins, has {len(TLV767_Q1)}")
-    if len(SN65DSI85_Q1) != 64:
-        problems.append(f"SN65DSI85_Q1 should have 64 pins, "
+    if len(TLV767_Q1) != 9:
+        problems.append(f"TLV767_Q1 should have 9 pins (8 + EP), has {len(TLV767_Q1)}")
+    if len(SN65DSI85_Q1) != 65:
+        problems.append(f"SN65DSI85_Q1 should have 65 pins (64 + EP), "
                         f"has {len(SN65DSI85_Q1)}")
     # The bridge has twelve separate VCC pins and they must all reach the
     # 1.8 V rail; a dropped one is a brownout nobody sees on the drawing.
     ncc = sum(1 for _, n, _ in SN65DSI85_Q1 if n.startswith("VCC"))
     if ncc != 12:
         problems.append(f"SN65DSI85_Q1 should have 12 VCC pins, has {ncc}")
-    if len(PCM3168A_Q1) != 64:
-        problems.append(f"PCM3168A_Q1 should have 64 pins, "
+    if len(PCM3168A_Q1) != 65:
+        problems.append(f"PCM3168A_Q1 should have 65 pins (64 + EP), "
                         f"has {len(PCM3168A_Q1)}")
-    if len(TPS2557_Q1) != 8:
-        problems.append(f"TPS2557_Q1 should have 8 pins, has {len(TPS2557_Q1)}")
+    if len(TPS2557_Q1) != 9:
+        problems.append(f"TPS2557_Q1 should have 9 pins (8 + EP), has {len(TPS2557_Q1)}")
     if len(SN74AXC4T245_Q1) != 16:
         problems.append(f"SN74AXC4T245_Q1 should have 16 pins, "
                         f"has {len(SN74AXC4T245_Q1)}")
@@ -459,3 +467,40 @@ if __name__ == "__main__":
             print("  -", p)
         sys.exit(1)
     print("part tables OK")
+
+
+# ---------------------------------------------------------------------------
+# Footprint assignments.
+#
+# All but one come from KiCad's own libraries, and build_schematic.py
+# verifies at build time that every file named here actually exists -
+# a typo in a footprint name is otherwise invisible until the netlist is
+# imported into the PCB editor.
+#
+# Exposed pads are pad N+1 in every one of these footprints (65 on the
+# TQFP-64s, 25 on the VQFN-24, 9 on the SON-8s), which is why the pin
+# tables above carry an explicit EP pin.
+# ---------------------------------------------------------------------------
+FOOTPRINTS = {
+    # The Verdin module plugs into a standard DDR4 SODIMM socket, and
+    # KiCad's footprint has exactly 260 pads numbered 1-260 - a direct
+    # match for the extracted pinout.
+    "Verdin_iMX95_X1": "Connector_PCBEdge:SODIMM-260_DDR4_H4.0-5.2_OrientationStd_Socket",
+    "LM74930-Q1":      "Package_DFN_QFN:Texas_RGE0024H_VQFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm",
+    "TLV767-Q1":       "Package_DFN_QFN:Texas_DRB0008A",
+    "TPS2557-Q1":      "Package_DFN_QFN:Texas_DRB0008A",
+    "TCAN1044V-Q1":    "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "SN65DSI85-Q1":    "Package_QFP:Texas_TQFP-64-1EP_10x10mm_P0.5mm_EP8x8mm_Mask4.44x4.44mm",
+    "PCM3168A-Q1":     "Package_QFP:Texas_TQFP-64-1EP_10x10mm_P0.5mm_EP8x8mm_Mask4.44x4.44mm",
+    "SN74AXC4T245-Q1": "Package_SO:TSSOP-16_4.4x5mm_P0.65mm",
+    # LM61460-Q1 is the one gap: its RJR (VQFN-HR-14) package has no
+    # KiCad footprint and needs a generated one, the same way the sibling
+    # projects generate their odd packages.
+    "LM61460-Q1":      "",
+    "R":    "Resistor_SMD:R_0603_1608Metric",
+    "C":    "Capacitor_SMD:C_0603_1608Metric",
+    "L":    "Inductor_SMD:L_1210_3225Metric",
+    "TVS":  "Diode_SMD:D_SMB",
+    "FUSE": "Fuse:Fuse_Bourns_MF-RG300",
+    "NFET": "Package_TO_SOT_SMD:SOT-23",
+}

@@ -169,7 +169,7 @@ def build_x1_symbol():
     lib_id = f"{LIB}:Verdin_iMX95_X1"
     parent = Symbol.create_new(
         id=lib_id, reference="J", value="Verdin iMX95",
-        footprint="",   # 260-pin SODIMM socket; not yet drawn
+        footprint=parts.FOOTPRINTS["Verdin_iMX95_X1"],
         datasheet="https://docs.toradex.com/200007-verdin_imx95_datasheet.pdf")
     parent.pinNames = True
     parent.pinNamesOffset = 0.508
@@ -371,7 +371,7 @@ generic_offsets = {}   # (lib_id, num) -> (dx, dy) symbol space
 generic_heights = {}   # lib_id -> body height
 
 
-def build_generic_symbol(lib_id, ref_prefix, value, pins, footprint=""):
+def build_generic_symbol(lib_id, ref_prefix, value, pins, footprint=None):
     """A rectangular symbol, pins split first-half left / second-half right."""
     half = -(-len(pins) // 2)
     left, right = pins[:half], pins[half:]
@@ -389,6 +389,8 @@ def build_generic_symbol(lib_id, ref_prefix, value, pins, footprint=""):
     # precondition being violated.
     width = max(15.24, 2.54 * -(-(longest * 2.0 + 7.62) // 2.54))
 
+    if footprint is None:
+        footprint = parts.FOOTPRINTS.get(lib_id.split(":", 1)[1], "")
     sym = Symbol.create_new(id=lib_id, reference=ref_prefix, value=value,
                             footprint=footprint)
     sym.pinNames = True
@@ -573,6 +575,9 @@ def build_power_tree(x0, y0, usable_h):
         "OVCLAMP": "OV_DIV", "NC2": None,
         "ISCP": "+12V_PROT", "CS-": "SENSE_OUT", "CS+": "CS_PLUS",
         "NC3": None, "VS": "VBAT_F", "CAP": "CAP_CP", "C": "+12V_PROT",
+        # Exposed pad deliberately floating - the datasheet forbids
+        # grounding it, so this NoConnect is load-bearing.
+        "EP": None,
     })
 
     for ref, val, nets in [
@@ -659,7 +664,7 @@ def build_1v8_and_can(x0, y0, usable_h):
         # exactly the "carrier peripherals may power up" signal, and it
         # stays high through sleep.
         "EN": "PWR_EN_MOCI",
-        "NC1": None, "NC2": None,
+        "NC1": None, "NC2": None, "EP": "GND",
     })
     flow(c, "C9", "10u in", {"1": "+5V", "2": "GND"})
     flow(c, "C10", "10u out", {"1": "+1V8", "2": "GND"})
@@ -746,6 +751,7 @@ def build_bridge(x0, y0, usable_h):
         "ADDR": "GND",
         # Reserved pins: "must be left unconnected for normal operation".
         "RSVD1": None, "RSVD2": None,
+        "EP": "GND",
     }
     for i in range(1, 13):
         br[f"VCC{i}"] = "+1V8"
@@ -833,7 +839,7 @@ def build_audio(x0, y0, usable_h):
     flow(u_ldo, "U6", "TLV767-Q1 3V3", {
         "IN": "+5V", "OUT": "+3V3", "FB": "FB_3V3",
         "GND": "GND", "GND2": "GND", "EN": "PWR_EN_MOCI",
-        "NC1": None, "NC2": None,
+        "NC1": None, "NC2": None, "EP": "GND",
     })
     flow(c, "C22", "10u in", {"1": "+5V", "2": "GND"})
     flow(c, "C23", "10u out", {"1": "+3V3", "2": "GND"})
@@ -906,6 +912,7 @@ def build_audio(x0, y0, usable_h):
         "DOUT1": "CODEC_DOUT_3V3", "DOUT2": None, "DOUT3": None,
         "OVF": None, "ZERO": None,
         "VIN1P": "MIC_IN_P", "VIN1N": "MIC_IN_N",
+        "EP": "GND",
     }
     for ch in range(2, 7):
         cod[f"VIN{ch}P"] = None
@@ -989,7 +996,7 @@ def build_usb(x0, y0, usable_h):
         "EN": "USB1_EN",          # active HIGH on this variant
         "ILIM": "USB_ILIM",
         "FAULT": "USB1_OC",
-        "GND": "GND",
+        "GND": "GND", "EP": "GND",
     })
     # ~3.3 A limit, leaving margin above the 3 A advertised on CC.
     flow(r, "R37", "36k ILIM", {"1": "USB_ILIM", "2": "GND"})
@@ -1186,6 +1193,26 @@ def main():
     if driven_nets:
         print(f"  rails with a real driver (no flag): "
               f"{', '.join(sorted(driven_nets))}")
+
+    # Every footprint named in parts.FOOTPRINTS must really exist. A typo
+    # in a library path is otherwise invisible until the netlist reaches
+    # the PCB editor and silently drops the part.
+    fp_root = r"C:\Program Files\KiCad\10.0\share\kicad\footprints"
+    missing_fp = []
+    for name, fp in sorted(parts.FOOTPRINTS.items()):
+        if not fp:
+            continue
+        lib, _, fpname = fp.partition(":")
+        path = os.path.join(fp_root, lib + ".pretty", fpname + ".kicad_mod")
+        if not os.path.exists(path):
+            missing_fp.append(f"{name} -> {fp}")
+    if missing_fp:
+        print(f"  ERROR: {len(missing_fp)} footprint(s) not found:")
+        for m in missing_fp:
+            print("    ", m)
+    unassigned = [n for n, fp in parts.FOOTPRINTS.items() if not fp]
+    if unassigned:
+        print(f"  footprints still to generate: {', '.join(unassigned)}")
 
     # Net-collision check. Sections are laid out independently, so two
     # of them can drift into the same region and land a stub endpoint of

@@ -44,6 +44,37 @@ blocked on a datasheet that has not arrived or deliberately optional:
 
 **160 pins carry real NoConnect items and 40 signal nets are wired.**
 
+**Footprints are assigned and verified.** Every part except one maps to a
+KiCad library footprint, and the build checks that each named file
+actually exists — a mistyped library path is otherwise invisible until
+the netlist reaches the PCB editor and silently drops the part. The one
+gap is the **LM61460-Q1**, whose RJR (VQFN-HR-14) package has no KiCad
+footprint and needs generating, the same way the sibling projects
+generate their odd packages.
+
+The Verdin module plugs into a standard DDR4 SODIMM socket, and KiCad's
+`SODIMM-260_DDR4_H4.0-5.2_OrientationStd_Socket` has exactly 260 pads
+numbered 1–260 — a direct match for the extracted pinout, so the biggest
+footprint risk on this board turned out to be no risk at all.
+
+### Exposed pads are three different decisions
+
+Every one of these footprints numbers its exposed pad N+1 — 65 on the
+TQFP-64s, 25 on the VQFN-24, 9 on the SON-8s. Each symbol therefore
+carries an explicit `EP` pin, so what happens to that pad is a visible
+decision on the schematic rather than an accident of the pad having no
+net:
+
+| Part | Exposed pad |
+| --- | --- |
+| **LM74930-Q1** | **NoConnect — must float.** The datasheet forbids grounding it |
+| TLV767-Q1, TPS2557-Q1 | GND |
+| SN65DSI85-Q1, PCM3168A-Q1 | GND (PowerPAD is reference ground) |
+
+The LM74930-Q1's NoConnect is load-bearing: without an explicit pin,
+that pad is merely netless, and nothing on the drawing would stop a
+later ground-stitching pass from claiming it.
+
 What is already final:
 
 - all 260 X1 pins exist, banked into 6 units
