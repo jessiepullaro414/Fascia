@@ -24,28 +24,25 @@ module's `WB` variant.
 
 ## Status
 
-**Schematic in progress — display, audio and USB-C wired.**
+**Schematic in progress — every block wired except the backlight.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
 containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
-the 5 V buck, the 1.8 V LDO, the CAN FD link, and the SN65DSI85-Q1
-bridge with its panel connector. No PCB yet.
+the 5 V buck, the 1.8 V and 3.3 V rails, CAN FD, the SN65DSI85-Q1
+DSI-to-LVDS bridge, the PCM3168A-Q1 audio subsystem with its level
+shifters, the USB-C port, and the control/sequencing block. No PCB yet.
 
-`kicad-cli sch erc` reports **29 violations, all expected**, and the
-remaining set is checked by bank rather than by count:
+`kicad-cli sch erc` reports **10 violations**, and every one is either
+blocked on a datasheet that has not arrived or deliberately optional:
 
-| Bank | Left | Waiting on |
+| What | Count | Why it is still open |
 | --- | --- | --- |
-| A | 3 | `VCC_BACKUP`, `PWR_1V8_MOCI`, `PMIC_PGOOD` |
-| B | 16 | the control / sequencing block |
-| C | **2** | `PWM_3_DSI` and `GPIO_10_DSI` — backlight, blocked on the panel datasheet |
-| D | 6 | the panel touch link (`USB_2`, 4) and the second CAN (2) |
+| `PWM_3_DSI`, `GPIO_10_DSI` | 2 | Backlight — needs the iFan string voltage and current |
+| `USB_2_*` | 4 | Panel touch link — needs the panel's touch interface confirmed |
+| `CAN_2_*` | 2 | Optional second CAN bus; no consumer chosen |
+| `DSI_IRQ` | 1 | Bridge interrupt; wants a spare 1.8 V module GPIO |
+| `IGN_SENSE` | 1 | Ignition sense; wants a module ADC input |
 
-plus `IGN_SENSE` and `DSI_IRQ`, which have no destination yet.
-
-The display bank being down to two pins is the milestone: **the whole
-DSI-to-LVDS path is wired**, and the only thing still missing from it is
-the backlight, which cannot be designed until iFan send the string
-voltage and current.
+**160 pins carry real NoConnect items and 40 signal nets are wired.**
 
 What is already final:
 
@@ -90,6 +87,11 @@ What is already final:
   port, ID strapped low for host mode, a divided VBUS sense back to the
   module, and ESD on every pin a passenger can touch. No PD controller
   and no negotiation firmware.
+- **Control and sequencing wired** — JTAG header, power/recovery/reset
+  buttons, and the RTC coin cell behind the ≥47 kΩ current-limiting
+  resistor the datasheet requires (a lower value can stop the module
+  booting). `CTRL_PWR_EN_MOCI` now gates the 1.8 V and 3.3 V LDOs, so
+  the carrier rails follow the module instead of racing it at power-on.
 - every pin on all nine ICs either netted or explicitly NoConnected
 
 ### The generator checks for silently merged nets

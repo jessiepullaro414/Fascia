@@ -106,6 +106,32 @@ X1_NETS = {
     "USB_1_OC#":  "USB1_OC",
     "USB_1_VBUS": "USB1_VBUS_SENSE",
     "USB_1_ID":   "USB1_ID",
+    # Control and sequencing.
+    "CTRL_PWR_EN_MOCI":  "PWR_EN_MOCI",
+    "CTRL_RESET_MOCI#":  "RESET_MOCI",
+    "CTRL_RESET_MICO#":  "RESET_MICO",
+    "CTRL_PWR_BTN_MICO#": "PWR_BTN",
+    "CTRL_RECOVERY_MICO#": "RECOVERY",
+    "JTAG_1_TCK":   "JTAG_TCK",
+    "JTAG_1_TMS":   "JTAG_TMS",
+    "JTAG_1_TDI":   "JTAG_TDI",
+    "JTAG_1_TDO":   "JTAG_TDO",
+    "JTAG_1_TRST#": "JTAG_TRST",
+    "JTAG_1_VREF":  "JTAG_VREF",
+    "VCC_BACKUP":   "VBACKUP",
+}
+
+# X1 pins this board deliberately does not use, outside the unused bank.
+# Each one the Verdin datasheet explicitly permits leaving floating, or
+# that this design has no use for. They get real NoConnect items, same as
+# bank E, rather than being left to show up as ERC noise.
+X1_NC = {
+    "CTRL_FORCE_OFF_MOCI#",  # datasheet: "can be left floating"
+    "CTRL_WAKE1_MICO#",      # "can be left floating if wake is disabled"
+    "CTRL_SLEEP_MOCI#",      # no carrier rail is sequenced off in sleep
+    "TAMPER0", "TAMPER1",    # SoC tamper detect, unused here
+    "PWR_1V8_MOCI",          # the carrier makes its own 1.8 V
+    "PMIC_PGOOD",            # module-side power good, not used by us
 }
 
 
@@ -628,7 +654,11 @@ def build_1v8_and_can(x0, y0, usable_h):
     # is explicit about intent and costs nothing.
     flow(u_ldo, "U3", "TLV767-Q1", {
         "IN": "+5V", "OUT": "+1V8", "FB": "FB_1V8",
-        "GND": "GND", "GND2": "GND", "EN": "+5V",
+        "GND": "GND", "GND2": "GND",
+        # Gated by the module rather than tied on: CTRL_PWR_EN_MOCI is
+        # exactly the "carrier peripherals may power up" signal, and it
+        # stays high through sleep.
+        "EN": "PWR_EN_MOCI",
         "NC1": None, "NC2": None,
     })
     flow(c, "C9", "10u in", {"1": "+5V", "2": "GND"})
@@ -802,7 +832,7 @@ def build_audio(x0, y0, usable_h):
     # --- 3.3 V rail: the same TLV767-Q1 again, different divider --------
     flow(u_ldo, "U6", "TLV767-Q1 3V3", {
         "IN": "+5V", "OUT": "+3V3", "FB": "FB_3V3",
-        "GND": "GND", "GND2": "GND", "EN": "+5V",
+        "GND": "GND", "GND2": "GND", "EN": "PWR_EN_MOCI",
         "NC1": None, "NC2": None,
     })
     flow(c, "C22", "10u in", {"1": "+5V", "2": "GND"})
@@ -992,6 +1022,75 @@ def build_usb(x0, y0, usable_h):
     })
 
 
+def build_control(x0, y0, usable_h):
+    """
+    Power sequencing, reset, recovery and the JTAG header.
+
+    The important connection here is CTRL_PWR_EN_MOCI: it is the module's
+    own "carrier peripherals may power up now" output, and it stays high
+    through sleep. Gating the 1.8 V and 3.3 V LDOs with it means the
+    carrier rails follow the module rather than racing it at power-on.
+    """
+    r, c = f"{LIB}:R", f"{LIB}:C"
+    conn_jtag = build_generic_symbol(f"{LIB}:CONN_JTAG", "J", "JTAG",
+                                     [(1, "VREF", "passive"),
+                                      (2, "TMS", "passive"),
+                                      (3, "TCK", "passive"),
+                                      (4, "TDO", "passive"),
+                                      (5, "TDI", "passive"),
+                                      (6, "TRST", "passive"),
+                                      (7, "RESET", "passive"),
+                                      (8, "GND", "passive")])
+    conn_btn = build_generic_symbol(f"{LIB}:CONN_BTN", "J", "Buttons",
+                                    [(1, "PWR_BTN", "passive"),
+                                     (2, "RECOVERY", "passive"),
+                                     (3, "RESET", "passive"),
+                                     (4, "GND", "passive")])
+    conn_cell = build_generic_symbol(f"{LIB}:CONN_CELL", "J", "RTC cell",
+                                     [(1, "VBAT", "passive"),
+                                      (2, "GND", "passive")])
+
+    COL_W, ROW_H = 80.0, 26.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + usable_h:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    flow(conn_jtag, "J8", "JTAG debug", {
+        "VREF": "JTAG_VREF", "TMS": "JTAG_TMS", "TCK": "JTAG_TCK",
+        "TDO": "JTAG_TDO", "TDI": "JTAG_TDI", "TRST": "JTAG_TRST",
+        "RESET": "RESET_MICO", "GND": "GND",
+    })
+    flow(conn_btn, "J9", "Buttons", {
+        "PWR_BTN": "PWR_BTN", "RECOVERY": "RECOVERY",
+        "RESET": "RESET_MICO", "GND": "GND",
+    })
+    # These are active-low inputs to the module and are asserted by
+    # shorting to ground, so each needs a pull-up to idle high. RECOVERY
+    # already has a 10k pull-up on the module, but a local one costs
+    # nothing and makes the intent readable on the drawing.
+    for ref, net in (("R44", "PWR_BTN"), ("R45", "RECOVERY"),
+                     ("R46", "RESET_MICO")):
+        flow(r, ref, "10k pullup", {"1": net, "2": "+1V8"})
+    flow(r, "R47", "10k pullup", {"1": "RESET_MOCI", "2": "+1V8"})
+    flow(r, "R48", "10k JTAG Vref", {"1": "JTAG_VREF", "2": "+1V8"})
+
+    # RTC backup. The datasheet is explicit that a current-limiting
+    # resistor of at least 47k must sit between the cell and VCC_BACKUP -
+    # a lower value can stop the module booting.
+    flow(conn_cell, "J10", "RTC coin cell",
+         {"VBAT": "VBACKUP_CELL", "GND": "GND"})
+    flow(r, "R49", "47k min", {"1": "VBACKUP_CELL", "2": "VBACKUP"})
+    flow(c, "C39", "100n", {"1": "VBACKUP", "2": "GND"})
+
+
 def main():
     x1_lib = build_x1_symbol()
     gnd_lib = rail("GND")
@@ -1053,7 +1152,7 @@ def main():
                 add_wire(px, py, wx, wy)
                 add_label(X1_NETS[name], wx, wy, 0 if out > 0 else 180)
                 n_sig += 1
-            elif label.startswith("E"):
+            elif name in X1_NC or label.startswith("E"):
                 # Deliberately unused. This project's KiCad notes record
                 # that a stub wire plus a unique local label reads to ERC
                 # as a dangling label - a real NoConnect is the fix.
@@ -1071,6 +1170,7 @@ def main():
     build_audio(560.0, 430.0, 370.0)
     build_power_tree(880.0, 60.0, 700.0)
     build_usb(660.0, 60.0, 520.0)
+    build_control(60.0, 60.0, 280.0)
 
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from
