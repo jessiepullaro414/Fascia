@@ -24,13 +24,13 @@ module's `WB` variant.
 
 ## Status
 
-**Schematic in progress — display and audio paths wired.**
+**Schematic in progress — display, audio and USB-C wired.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
 containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
 the 5 V buck, the 1.8 V LDO, the CAN FD link, and the SN65DSI85-Q1
 bridge with its panel connector. No PCB yet.
 
-`kicad-cli sch erc` reports **35 violations, all expected**, and the
+`kicad-cli sch erc` reports **29 violations, all expected**, and the
 remaining set is checked by bank rather than by count:
 
 | Bank | Left | Waiting on |
@@ -38,7 +38,7 @@ remaining set is checked by bank rather than by count:
 | A | 3 | `VCC_BACKUP`, `PWR_1V8_MOCI`, `PMIC_PGOOD` |
 | B | 16 | the control / sequencing block |
 | C | **2** | `PWM_3_DSI` and `GPIO_10_DSI` — backlight, blocked on the panel datasheet |
-| D | 12 | USB-C (10) and the second CAN (2) |
+| D | 6 | the panel touch link (`USB_2`, 4) and the second CAN (2) |
 
 plus `IGN_SENSE` and `DSI_IRQ`, which have no destination yet.
 
@@ -85,7 +85,32 @@ What is already final:
   "The audio block needs level shifters" below
 - **I2C crosses domains through the classic two-FET translator** rather
   than a push-pull part, which cannot pass an open-drain bus
-- every pin on all eight ICs either netted or explicitly NoConnected
+- **USB-C port wired** — TPS2557-Q1 switching VBUS with a ~3.3 A limit,
+  Rp resistors on both CC pins advertising 3 A from a downstream-facing
+  port, ID strapped low for host mode, a divided VBUS sense back to the
+  module, and ESD on every pin a passenger can touch. No PD controller
+  and no negotiation firmware.
+- every pin on all nine ICs either netted or explicitly NoConnected
+
+### The generator checks for silently merged nets
+
+Blocks are laid out independently, so two can drift into the same region
+and land one net's stub endpoint exactly on another's. That **merges the
+two nets** — electrically catastrophic and near-invisible on the drawing.
+It happened twice while building this schematic:
+
+1. a codec decoupling cap's ground stub landed on the power tree's
+   `UVLO_DIV` label;
+2. the USB block's `USB_ILIM` stub landed on connector unit D's
+   `USB1_VBUS_SENSE` stub.
+
+ERC does report this as `multiple_net_names`, but only for the pair it
+happens to notice and only after the fact. `build_schematic.py` now
+records every terminated coordinate — pin positions *and* stub
+endpoints, for both generic parts and the X1 connector — and fails
+loudly, naming both nets and both owning references. The first version
+of that check scanned only label positions and missed the second case
+entirely, which is why it now tracks points rather than labels.
 
 ### The audio block needs level shifters (and why that is not optional)
 

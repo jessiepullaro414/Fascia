@@ -97,6 +97,15 @@ X1_NETS = {
     "I2S_1_MCLK":  "I2S_SCKI_1V8",    # master clock -> codec SCKI
     "I2C_1_SDA":   "I2C1_SDA_1V8",
     "I2C_1_SCL":   "I2C1_SCL_1V8",
+    # USB-C for wired CarPlay / Android Auto. EN and OC# need no level
+    # shifting: the switch's VIH is 1.1 V and its FAULT is pulled to the
+    # 1.8 V rail, so both sit inside the module's rating.
+    "USB_1_D_N":  "USB1_DN",
+    "USB_1_D_P":  "USB1_DP",
+    "USB_1_EN":   "USB1_EN",
+    "USB_1_OC#":  "USB1_OC",
+    "USB_1_VBUS": "USB1_VBUS_SENSE",
+    "USB_1_ID":   "USB1_ID",
 }
 
 
@@ -324,6 +333,13 @@ power_net_points = {}
 # for a driver that is not on the sheet.
 driven_nets = set()
 
+# Every coordinate a net is terminated at, so two blocks drifting into
+# each other can be caught by construction. Keyed on the point, valued
+# with (net, owning reference). Covers pin positions AND stub endpoints -
+# an earlier version only scanned label positions and therefore missed a
+# stub whose endpoint landed on another block's pin.
+net_points = {}
+
 generic_pins = {}      # lib_id -> [(num, name, etype), ...]
 generic_offsets = {}   # (lib_id, num) -> (dx, dy) symbol space
 generic_heights = {}   # lib_id -> body height
@@ -410,6 +426,12 @@ def place_part(lib_id, ref, value, x, y, nets):
             continue
         out = -1 if dx < 0 else 1
         wx, wy = snap(px + out * STUB), py
+        for pt in ((px, py), (wx, wy)):
+            prev = net_points.get(pt)
+            if prev and prev[0] != net:
+                print(f"  ERROR: {pt} carries both {prev[0]} (via {prev[1]}) "
+                      f"and {net} (via {ref})")
+            net_points[pt] = (net, ref)
         add_wire(px, py, wx, wy)
         if net in POWER_NETS:
             place(rail(net), f"#PWR_{ref}_{num}", net, wx, wy, hide_ref=True)
@@ -894,6 +916,82 @@ def build_audio(x0, y0, usable_h):
     flow(r, "R32", "10k bias", {"1": "VCOMAD", "2": "MIC_IN_N"})
 
 
+def build_usb(x0, y0, usable_h):
+    """
+    USB-C port for wired CarPlay / Android Auto, with 3 A charging.
+
+    No PD controller and no negotiation firmware: CC1 and CC2 carry Rp
+    resistors that advertise 3 A as a downstream-facing port, which is
+    all a phone needs to charge at 15 W. VBUS comes from its own switch
+    so a phone fault cannot brown out the SoC.
+    """
+    r, c = f"{LIB}:R", f"{LIB}:C"
+    tvs = f"{LIB}:TVS"
+    u_sw = build_generic_symbol(f"{LIB}:TPS2557-Q1", "U", "TPS2557-Q1",
+                                parts.TPS2557_Q1)
+    conn_usb = build_generic_symbol(f"{LIB}:CONN_USBC", "J", "USB-C",
+                                    [(1, "VBUS", "passive"),
+                                     (2, "DP", "passive"),
+                                     (3, "DN", "passive"),
+                                     (4, "CC1", "passive"),
+                                     (5, "CC2", "passive"),
+                                     (6, "SBU1", "passive"),
+                                     (7, "SBU2", "passive"),
+                                     (8, "GND", "passive"),
+                                     (9, "SHIELD", "passive")])
+
+    COL_W, ROW_H = 80.0, 26.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + usable_h:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    flow(u_sw, "U10", "TPS2557-Q1", {
+        "IN1": "+5V", "IN2": "+5V",
+        "OUT1": "USB_VBUS", "OUT2": "USB_VBUS",
+        "EN": "USB1_EN",          # active HIGH on this variant
+        "ILIM": "USB_ILIM",
+        "FAULT": "USB1_OC",
+        "GND": "GND",
+    })
+    # ~3.3 A limit, leaving margin above the 3 A advertised on CC.
+    flow(r, "R37", "36k ILIM", {"1": "USB_ILIM", "2": "GND"})
+    # FAULT is open drain; pulled to 1.8 V so it stays inside the
+    # module's input rating rather than to the 5 V it switches.
+    flow(r, "R38", "100k FLT pu", {"1": "USB1_OC", "2": "+1V8"})
+    flow(c, "C37", "100n IN", {"1": "+5V", "2": "GND"})
+    flow(c, "C38", "150u VBUS", {"1": "USB_VBUS", "2": "GND"})
+
+    # Rp on both CC pins advertises 3 A from a downstream-facing port.
+    # Both are populated because Type-C is reversible - whichever way the
+    # cable goes in, one of them is the active CC.
+    flow(r, "R39", "10k Rp CC1", {"1": "USB_CC1", "2": "+5V"})
+    flow(r, "R40", "10k Rp CC2", {"1": "USB_CC2", "2": "+5V"})
+    # ID low selects host mode, which is what CarPlay needs.
+    flow(r, "R41", "0R ID", {"1": "USB1_ID", "2": "GND"})
+    # VBUS sense back to the module, divided to stay under 1.8 V logic.
+    flow(r, "R42", "100k Vsense", {"1": "USB_VBUS", "2": "USB1_VBUS_SENSE"})
+    flow(r, "R43", "56k Vsense", {"1": "USB1_VBUS_SENSE", "2": "GND"})
+    # ESD on the exposed pins of a connector a passenger can touch.
+    flow(tvs, "D2", "ESD DP", {"1": "USB1_DP", "2": "GND"})
+    flow(tvs, "D3", "ESD DN", {"1": "USB1_DN", "2": "GND"})
+    flow(tvs, "D4", "ESD VBUS", {"1": "USB_VBUS", "2": "GND"})
+
+    flow(conn_usb, "J7", "USB-C CarPlay", {
+        "VBUS": "USB_VBUS", "DP": "USB1_DP", "DN": "USB1_DN",
+        "CC1": "USB_CC1", "CC2": "USB_CC2",
+        "SBU1": None, "SBU2": None,        # unused in this application
+        "GND": "GND", "SHIELD": "GND",
+    })
+
+
 def main():
     x1_lib = build_x1_symbol()
     gnd_lib = rail("GND")
@@ -946,6 +1044,12 @@ def main():
             elif name in X1_NETS:
                 out = -1 if unit_pin_offsets[(idx, pin)][0] < 0 else 1
                 wx, wy = snap(px + out * STUB), py
+                for pt in ((px, py), (wx, wy)):
+                    prev = net_points.get(pt)
+                    if prev and prev[0] != X1_NETS[name]:
+                        print(f"  ERROR: {pt} carries both {prev[0]} "
+                              f"(via {prev[1]}) and {X1_NETS[name]} (via J1)")
+                    net_points[pt] = (X1_NETS[name], "J1")
                 add_wire(px, py, wx, wy)
                 add_label(X1_NETS[name], wx, wy, 0 if out > 0 else 180)
                 n_sig += 1
@@ -966,6 +1070,7 @@ def main():
     build_1v8_and_can(300.0, 430.0, 370.0)
     build_audio(560.0, 430.0, 370.0)
     build_power_tree(880.0, 60.0, 700.0)
+    build_usb(660.0, 60.0, 520.0)
 
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from

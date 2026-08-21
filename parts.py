@@ -346,6 +346,41 @@ SN74AXC4T245_Q1 = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# TPS2557-Q1 - automotive current-limited power-distribution switch.
+# Source: TI SLVSC97B, March 2014, revised September 2020. 8-terminal
+# S-PVSON with thermal pad (DRB).
+#
+# GOTCHA: EN polarity is the ONLY difference between two otherwise
+# identical parts. TPS2557-Q1 is enable-active-HIGH; TPS2556-Q1 is
+# active-low. Ordering the wrong one gives a port that is powered exactly
+# when it should not be.
+#
+# Convenient: VIH on EN is 1.1 V, so the module's 1.8 V GPIO drives it
+# directly - no level shifter on this path, unlike the audio codec.
+#
+# FAULT is active-low open drain and needs a pull-up. It is pulled to
+# 1.8 V rather than 5 V so it lands inside the module's input rating.
+#
+# NOTE: thermal pad is internally connected to GND and must also be
+# connected externally.
+# ---------------------------------------------------------------------------
+TPS2557_Q1 = [
+    (1, "GND",   "power_in"),
+    (2, "IN1",   "power_in"),
+    (3, "IN2",   "power_in"),
+    (4, "EN",    "input"),          # active HIGH on this variant
+    (5, "ILIM",  "passive"),        # 20k - 187k sets the limit
+    # OUT1/OUT2 (and IN1/IN2) are the SAME internal node, brought out on
+    # two pins to share current. Only one is typed as a driver; typing
+    # both power_out makes ERC report a power-output conflict against
+    # what is physically one pin.
+    (6, "OUT1",  "power_out"),
+    (7, "OUT2",  "passive"),
+    (8, "FAULT", "open_collector"),
+]
+
+
 def verify():
     """Sanity-check the tables before anything builds symbols from them."""
     problems = []
@@ -355,7 +390,8 @@ def verify():
                        ("TLV767_Q1", TLV767_Q1),
                        ("SN65DSI85_Q1", SN65DSI85_Q1),
                        ("PCM3168A_Q1", PCM3168A_Q1),
-                       ("SN74AXC4T245_Q1", SN74AXC4T245_Q1)):
+                       ("SN74AXC4T245_Q1", SN74AXC4T245_Q1),
+                       ("TPS2557_Q1", TPS2557_Q1)):
         numbers = [p[0] for p in pins]
         if numbers != list(range(1, len(pins) + 1)):
             problems.append(f"{name}: pin numbers are not 1..{len(pins)} "
@@ -386,6 +422,8 @@ def verify():
     if len(PCM3168A_Q1) != 64:
         problems.append(f"PCM3168A_Q1 should have 64 pins, "
                         f"has {len(PCM3168A_Q1)}")
+    if len(TPS2557_Q1) != 8:
+        problems.append(f"TPS2557_Q1 should have 8 pins, has {len(TPS2557_Q1)}")
     if len(SN74AXC4T245_Q1) != 16:
         problems.append(f"SN74AXC4T245_Q1 should have 16 pins, "
                         f"has {len(SN74AXC4T245_Q1)}")
@@ -409,7 +447,8 @@ if __name__ == "__main__":
                        ("TLV767-Q1 (WSON-8)", TLV767_Q1),
                        ("SN65DSI85-Q1 (HTQFP-64)", SN65DSI85_Q1),
                        ("PCM3168A-Q1 (HTQFP-64)", PCM3168A_Q1),
-                       ("SN74AXC4T245-Q1 (TSSOP-16)", SN74AXC4T245_Q1)):
+                       ("SN74AXC4T245-Q1 (TSSOP-16)", SN74AXC4T245_Q1),
+                       ("TPS2557-Q1 (SON-8)", TPS2557_Q1)):
         print(f"\n=== {name}: {len(pins)} pins ===")
         for num, pname, etype in pins:
             print(f"   {num:2d}  {pname:<8s} {etype}")
