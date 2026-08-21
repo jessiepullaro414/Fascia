@@ -502,4 +502,20 @@ FOOTPRINTS = {
     "TVS":  "Diode_SMD:D_SMB",
     "FUSE": "Fuse:Fuse_Bourns_MF-RG300",
     "NFET": "Package_TO_SOT_SMD:SOT-23",
+
+    # Connectors. These are PROVISIONAL - 2.54 mm pin headers standing in
+    # so the board can be placed and routed end to end. Every one of them
+    # is a real connector decision still to be made, and two are blocked:
+    # CONN_PANEL waits on the iFan datasheet (the real part is a 60-pin
+    # FFC, not 22 pins), and CONN_USBC needs a 24-pad receptacle footprint
+    # with a matching 24-pin symbol rather than a 9-pin stand-in.
+    "CONN3":      "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
+    "CONN_CAN":   "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
+    "CONN_PANEL": "Connector_PinHeader_2.54mm:PinHeader_1x22_P2.54mm_Vertical",
+    "CONN_PREOUT": "Connector_PinHeader_2.54mm:PinHeader_1x11_P2.54mm_Vertical",
+    "CONN_MIC":   "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
+    "CONN_USBC":  "Connector_PinHeader_2.54mm:PinHeader_1x09_P2.54mm_Vertical",
+    "CONN_JTAG":  "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical",
+    "CONN_BTN":   "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+    "CONN_CELL":  "Battery:BatteryHolder_Keystone_1058_1x2032",
 }

@@ -24,7 +24,22 @@ module's `WB` variant.
 
 ## Status
 
-**Schematic in progress — every block wired except the backlight.**
+**PCB started — parts placed and netted, nothing routed yet.**
+`build_pcb.py` generates `Fascia.kicad_pcb`: 118 footprints, 574 pads
+netted across 129 nets, six layers, on a 148 × 164 mm board.
+`run_drc.py` reports **schematic parity 0** — the board and the schematic
+describe the same circuit — with 414 unconnected items (expected until
+routing) and 12 `lib_footprint_mismatch` findings that are a KiCad
+tooling artifact, explained in that script.
+
+Placement is currently **mechanical, not functional**: parts are packed
+into rows by height. That is enough to route against, but a real layout
+wants functional grouping — the bridge beside the panel connector so the
+DSI run stays short, the power tree near the input, the codec away from
+the switching regulator. That is the next improvement, alongside
+`route_board.py`.
+
+**Schematic complete — every block wired except the backlight.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
 containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
 the 5 V buck, the 1.8 V and 3.3 V rails, CAN FD, the SN65DSI85-Q1

@@ -1,5 +1,12 @@
 {
-  "board": {},
+  "board": {
+    "design_settings": {
+      "rules": {
+        "min_through_hole_diameter": 0.2,
+        "min_hole_to_hole": 0.25
+      }
+    }
+  },
   "boards": [],
   "libraries": {
     "pinned_footprint_libs": [],
