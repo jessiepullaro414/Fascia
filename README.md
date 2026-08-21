@@ -24,15 +24,28 @@ module's `WB` variant.
 
 ## Status
 
-**Schematic in progress — connector, power tree and CAN wired.**
+**Schematic in progress — display path complete end to end.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
 containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
-the 5 V buck, the 1.8 V LDO and the CAN FD link. No PCB yet.
+the 5 V buck, the 1.8 V LDO, the CAN FD link, and the SN65DSI85-Q1
+bridge with its panel connector. No PCB yet.
 
-`kicad-cli sch erc` reports **49 violations, all expected**: 48 X1 pins
-in the control, display and remaining communications banks awaiting the
-bridge, codec and panel connector, plus `IGN_SENSE`, which has no
-destination until the ignition-sense path reaches a module ADC pin.
+`kicad-cli sch erc` reports **37 violations, all expected**, and the
+remaining set is checked by bank rather than by count:
+
+| Bank | Left | Waiting on |
+| --- | --- | --- |
+| A | 3 | `VCC_BACKUP`, `PWR_1V8_MOCI`, `PMIC_PGOOD` |
+| B | 16 | the control / sequencing block |
+| C | **2** | `PWM_3_DSI` and `GPIO_10_DSI` — backlight, blocked on the panel datasheet |
+| D | 14 | audio codec I2C, USB-C, second CAN |
+
+plus `IGN_SENSE` and `DSI_IRQ`, which have no destination yet.
+
+The display bank being down to two pins is the milestone: **the whole
+DSI-to-LVDS path is wired**, and the only thing still missing from it is
+the backlight, which cannot be designed until iFan send the string
+voltage and current.
 
 What is already final:
 
@@ -56,7 +69,15 @@ What is already final:
   decoupling, and a pull-down on `STB` because the part's internal
   pull-up would otherwise wake it in standby
 - the module's `CAN_1_TX` / `CAN_1_RX` now reach the transceiver
-- every pin on all four ICs either netted or explicitly NoConnected
+- **SN65DSI85-Q1 bridge wired** — DSI channel A in, both LVDS links out,
+  all twelve VCC pins on 1.8 V, `VCORE` treated as the 1.1 V *output* it
+  is with its 1 µF, `REFCLK` resistor-pulled to ground since the pixel
+  clock comes from the D-PHY clock, `ADDR` strapped low, and the unused
+  DSI channel B inputs plus both RSVD pins left genuinely unconnected
+  with NoConnect items rather than tied off
+- `J4` panel LVDS connector, **provisional** — carries all 20 LVDS
+  signals, but its real pin order and pin count await the panel datasheet
+- every pin on all five ICs either netted or explicitly NoConnected
 
 What exists right now:
 

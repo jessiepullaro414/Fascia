@@ -7,24 +7,22 @@ thermo-pcb projects: this script is the source of truth. Never hand-edit
 the generated .kicad_sch or .kicad_sym - change this file and re-run.
 
 Current stage: the Verdin iMX95 X1 module connector, the 12 V automotive
-front end, the 5 V buck, the 1.8 V LDO and the CAN FD link. The
-SN65DSI85-Q1 bridge, the audio codec, the USB-C port and the panel
-connector are not here yet, so this is deliberately an incomplete
-schematic - see README.md's "Status".
+front end, the 5 V buck, the 1.8 V LDO, the CAN FD link, and the
+SN65DSI85-Q1 DSI-to-LVDS bridge with its panel connector. The audio
+codec, the USB-C port and the backlight driver are not here yet, so this
+is deliberately an incomplete schematic - see README.md's "Status".
 
 What IS final at this stage:
   - all 260 X1 pins exist, banked into 6 units by verdin_x1.py
   - every GND pin is tied to ground, every VCC pin to the +5V rail
   - all 158 pins this board does not use carry real NoConnect items
-  - the LM74930-Q1 front end, LM61460-Q1 buck, TLV767-Q1 1.8 V LDO and
-    TCAN1044V-Q1 CAN transceiver are fully wired, every pin netted or
-    NoConnected
-  - the module's CAN_1_TX / CAN_1_RX now reach the transceiver
+  - LM74930-Q1, LM61460-Q1, TLV767-Q1, TCAN1044V-Q1 and SN65DSI85-Q1 are
+    all fully wired, every pin netted or NoConnected
+  - the module's CAN and full DSI link now reach their destinations
 
-`kicad-cli sch erc` reports 49 violations, all expected: 48 X1 pins in
-the control, display and remaining communications banks awaiting the
-blocks above, and IGN_SENSE, which has no destination until the
-ignition-sense path reaches a module ADC pin.
+`kicad-cli sch erc` reports 37 violations, all expected: 35 X1 pins
+awaiting the codec, USB-C and backlight blocks, plus IGN_SENSE and
+DSI_IRQ, which have no destination yet.
 """
 import json
 import os
@@ -79,6 +77,15 @@ POWER_IN = {"GND", "VCC"}
 X1_NETS = {
     "CAN_1_TX": "CAN1_TXD",     # module drives the transceiver's TXD
     "CAN_1_RX": "CAN1_RXD",     # transceiver's RXD drives the module
+    # MIPI DSI into the SN65DSI85-Q1. These are the pairs that stay ON
+    # the carrier - the long run to the panel is LVDS out of the bridge.
+    "DSI_1_D0_P": "DSI_D0_P", "DSI_1_D0_N": "DSI_D0_N",
+    "DSI_1_D1_P": "DSI_D1_P", "DSI_1_D1_N": "DSI_D1_N",
+    "DSI_1_D2_P": "DSI_D2_P", "DSI_1_D2_N": "DSI_D2_N",
+    "DSI_1_D3_P": "DSI_D3_P", "DSI_1_D3_N": "DSI_D3_N",
+    "DSI_1_CLK_P": "DSI_CLK_P", "DSI_1_CLK_N": "DSI_CLK_N",
+    "I2C_2_DSI_SDA": "DSI_I2C_SDA", "I2C_2_DSI_SCL": "DSI_I2C_SCL",
+    "GPIO_9_DSI": "DSI_BRIDGE_EN",
 }
 
 
@@ -609,6 +616,96 @@ def build_1v8_and_can(x0, y0, usable_h):
          {"CANH": "CAN1_H", "CANL": "CAN1_L", "GND": "GND"})
 
 
+def build_bridge(x0, y0, usable_h):
+    """
+    SN65DSI85-Q1 DSI-to-LVDS bridge and the panel connector.
+
+    Configured for datasheet Table 5 "Single DSI Input to Dual-Link
+    LVDS": DSI channel A, four lanes, out to both LVDS links with odd
+    pixels on A and even on B. Channel B's DSI inputs are therefore
+    unused, and the datasheet is explicit that they must be left
+    UNCONNECTED rather than tied off - so they get NoConnect items.
+    """
+    r = f"{LIB}:R"
+    c = f"{LIB}:C"
+    u_br = build_generic_symbol(f"{LIB}:SN65DSI85-Q1", "U", "SN65DSI85-Q1",
+                                parts.SN65DSI85_Q1)
+    lvds_pins = []
+    n = 1
+    for ch in ("A", "B"):
+        for sig in ("Y0", "Y1", "Y2", "Y3", "CLK"):
+            for pol in ("P", "N"):
+                lvds_pins.append((n, f"{ch}_{sig}{pol}", "passive"))
+                n += 1
+    lvds_pins.append((n, "GND1", "passive"))
+    lvds_pins.append((n + 1, "GND2", "passive"))
+    conn_panel = build_generic_symbol(f"{LIB}:CONN_PANEL", "J",
+                                      "Panel LVDS", lvds_pins)
+
+    COL_W, ROW_H = 78.0, 26.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + usable_h:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    br = {
+        "EN": "DSI_BRIDGE_EN", "SCL": "DSI_I2C_SCL", "SDA": "DSI_I2C_SDA",
+        "IRQ": "DSI_IRQ",
+        # Optional external reference clock, unused: the LVDS pixel clock
+        # comes from the free-running D-PHY clock instead. Pulled to
+        # ground through R22 rather than left floating, per the datasheet.
+        "REFCLK": "REFCLK_GND",
+        # 1.1 V regulator OUTPUT, not a supply input. Needs its 1 uF.
+        "VCORE": "VCORE_1V1",
+        # Strapped low for a defined I2C address. If it were strapped
+        # high it would have to go to the SAME 1.8 V rail as VCC.
+        "ADDR": "GND",
+        # Reserved pins: "must be left unconnected for normal operation".
+        "RSVD1": None, "RSVD2": None,
+    }
+    for i in range(1, 13):
+        br[f"VCC{i}"] = "+1V8"
+    for i in range(1, 4):
+        br[f"GND{i}"] = "GND"
+    for lane, net in (("0", "D0"), ("1", "D1"), ("2", "D2"), ("3", "D3")):
+        br[f"DA{lane}P"] = f"DSI_{net}_P"
+        br[f"DA{lane}N"] = f"DSI_{net}_N"
+    br["DACP"], br["DACN"] = "DSI_CLK_P", "DSI_CLK_N"
+    # Unused DSI channel B - explicitly NOT tied off.
+    for lane in ("0", "1", "2", "3"):
+        br[f"DB{lane}P"] = None
+        br[f"DB{lane}N"] = None
+    br["DBCP"] = br["DBCN"] = None
+    for ch in ("A", "B"):
+        for sig in ("Y0", "Y1", "Y2", "Y3", "CLK"):
+            for pol in ("P", "N"):
+                br[f"{ch}_{sig}{pol}"] = f"LVDS_{ch}_{sig}{pol}"
+
+    flow(u_br, "U5", "SN65DSI85-Q1", br)
+    flow(r, "R22", "10k REFCLK", {"1": "REFCLK_GND", "2": "GND"})
+    flow(c, "C14", "1u VCORE", {"1": "VCORE_1V1", "2": "GND"})
+    # One bulk plus a spread of local bypass; the real per-pin placement
+    # is a layout concern, but the parts have to exist in the netlist.
+    flow(c, "C15", "10u 1V8", {"1": "+1V8", "2": "GND"})
+    for i in range(16, 22):
+        flow(c, f"C{i}", "100n 1V8", {"1": "+1V8", "2": "GND"})
+
+    panel = {}
+    for ch in ("A", "B"):
+        for sig in ("Y0", "Y1", "Y2", "Y3", "CLK"):
+            for pol in ("P", "N"):
+                panel[f"{ch}_{sig}{pol}"] = f"LVDS_{ch}_{sig}{pol}"
+    panel["GND1"] = panel["GND2"] = "GND"
+    flow(conn_panel, "J4", "Panel LVDS (provisional)", panel)
+
+
 def main():
     x1_lib = build_x1_symbol()
     gnd_lib = rail("GND")
@@ -674,6 +771,7 @@ def main():
 
     build_power_tree(610.0, 55.0)
     build_1v8_and_can(320.0, 392.0, 150.0)
+    build_bridge(60.0, 392.0, 150.0)
 
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from
