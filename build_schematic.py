@@ -6,23 +6,25 @@ Same script-driven discipline as the sibling manifold-pcb / ecu-pcb /
 thermo-pcb projects: this script is the source of truth. Never hand-edit
 the generated .kicad_sch or .kicad_sym - change this file and re-run.
 
-Current stage: the Verdin iMX95 X1 module connector, plus the 12 V
-automotive front end and the main 5 V buck. The SN65DSI85-Q1 bridge, the
-CAN transceiver, the audio codec, the USB-C port and the panel connector
-are not here yet, so this is deliberately an incomplete schematic - see
-README.md's "Status".
+Current stage: the Verdin iMX95 X1 module connector, the 12 V automotive
+front end, the 5 V buck, the 1.8 V LDO and the CAN FD link. The
+SN65DSI85-Q1 bridge, the audio codec, the USB-C port and the panel
+connector are not here yet, so this is deliberately an incomplete
+schematic - see README.md's "Status".
 
 What IS final at this stage:
   - all 260 X1 pins exist, banked into 6 units by verdin_x1.py
   - every GND pin is tied to ground, every VCC pin to the +5V rail
   - all 158 pins this board does not use carry real NoConnect items
-  - the LM74930-Q1 front end and LM61460-Q1 buck are fully wired, with
-    every one of their pins either netted or NoConnected
+  - the LM74930-Q1 front end, LM61460-Q1 buck, TLV767-Q1 1.8 V LDO and
+    TCAN1044V-Q1 CAN transceiver are fully wired, every pin netted or
+    NoConnected
+  - the module's CAN_1_TX / CAN_1_RX now reach the transceiver
 
-`kicad-cli sch erc` reports 51 violations, all expected: 50 X1 pins in
-the control, display and communications banks awaiting the blocks above,
-and IGN_SENSE, which has no destination until the ignition-sense divider
-reaches a module ADC pin.
+`kicad-cli sch erc` reports 49 violations, all expected: 48 X1 pins in
+the control, display and remaining communications banks awaiting the
+blocks above, and IGN_SENSE, which has no destination until the
+ignition-sense path reaches a module ADC pin.
 """
 import json
 import os
@@ -70,6 +72,14 @@ STUB = 5.08           # wire length from a power pin out to its power symbol
 # else on the connector is typed passive: this is a board-to-board
 # connector, so ERC has no business inferring signal direction from it.
 POWER_IN = {"GND", "VCC"}
+
+# X1 signal pins that now have somewhere to go. Anything not listed is
+# still awaiting its block and stays deliberately unconnected, which ERC
+# reports and main() checks against the expected set.
+X1_NETS = {
+    "CAN_1_TX": "CAN1_TXD",     # module drives the transceiver's TXD
+    "CAN_1_RX": "CAN1_RXD",     # transceiver's RXD drives the module
+}
 
 
 def U():
@@ -290,6 +300,12 @@ POWER_NETS = {"GND", "+5V", "+12V_PROT", "+1V8", "VBAT_F"}
 # touching it graphically, does not satisfy power_pin_not_driven.
 power_net_points = {}
 
+# Rails that a real part actually drives, i.e. something on the net has a
+# power_out pin. Those must NOT get a PWR_FLAG: two power outputs on one
+# net is a pin_to_pin conflict, and the flag exists precisely to stand in
+# for a driver that is not on the sheet.
+driven_nets = set()
+
 generic_pins = {}      # lib_id -> [(num, name, etype), ...]
 generic_offsets = {}   # (lib_id, num) -> (dx, dy) symbol space
 generic_heights = {}   # lib_id -> body height
@@ -365,10 +381,12 @@ def place_part(lib_id, ref, value, x, y, nets):
     same rule the unused X1 pins follow.
     """
     place(lib_id, ref, value, x, y, body_h=generic_heights[lib_id])
-    for num, name, _etype in generic_pins[lib_id]:
+    for num, name, etype in generic_pins[lib_id]:
         dx, dy = generic_offsets[(lib_id, num)]
         px, py = snap(x + dx), snap(y - dy)
         net = nets.get(name)
+        if net is not None and etype == "power_out":
+            driven_nets.add(net)
         if net is None:
             sch.noConnects.append(NoConnect(position=Position(px, py), uuid=U()))
             continue
@@ -516,6 +534,81 @@ def build_power_tree(x0, y0):
         flow(lib, ref, val, nets)
 
 
+def build_1v8_and_can(x0, y0, usable_h):
+    """
+    The 1.8 V rail and the CAN FD link to ecu-pcb.
+
+    The 1.8 V rail exists because the Verdin's I/O is 1.8 V logic: it
+    feeds the CAN transceiver's VIO here, and the SN65DSI85-Q1 bridge
+    later. An LDO rather than a buck, deliberately - small load, and no
+    switching noise added to a board carrying LVDS next to a car radio.
+    """
+    r = f"{LIB}:R"
+    c = f"{LIB}:C"
+    u_ldo = build_generic_symbol(f"{LIB}:TLV767-Q1", "U", "TLV767-Q1",
+                                 parts.TLV767_Q1)
+    u_can = build_generic_symbol(f"{LIB}:TCAN1044V-Q1", "U", "TCAN1044V-Q1",
+                                 parts.TCAN1044V_Q1)
+    conn_can = build_generic_symbol(f"{LIB}:CONN_CAN", "J", "CAN",
+                                    [(1, "CANH", "passive"),
+                                     (2, "CANL", "passive"),
+                                     (3, "GND", "passive")])
+
+    # This block sits BELOW the X1 connector units rather than beside
+    # them, so it gets a short usable height and wraps into more columns.
+    COL_W, ROW_H = 78.0, 26.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + usable_h:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    # --- 1.8 V LDO -------------------------------------------------------
+    # EN has an internal pull-up and may float, but tying it to the input
+    # is explicit about intent and costs nothing.
+    flow(u_ldo, "U3", "TLV767-Q1", {
+        "IN": "+5V", "OUT": "+1V8", "FB": "FB_1V8",
+        "GND": "GND", "GND2": "GND", "EN": "+5V",
+        "NC1": None, "NC2": None,
+    })
+    flow(c, "C9", "10u in", {"1": "+5V", "2": "GND"})
+    flow(c, "C10", "10u out", {"1": "+1V8", "2": "GND"})
+    flow(r, "R17", "FB top", {"1": "+1V8", "2": "FB_1V8"})
+    flow(r, "R18", "FB bot", {"1": "FB_1V8", "2": "GND"})
+
+    # --- CAN FD ----------------------------------------------------------
+    flow(u_can, "U4", "TCAN1044V-Q1", {
+        "TXD": "CAN1_TXD", "RXD": "CAN1_RXD",
+        "VCC": "+5V",      # 4.5-5.5 V part supply
+        "VIO": "+1V8",     # matches the module's 1.8 V logic
+        "GND": "GND", "CANH": "CAN1_H", "CANL": "CAN1_L",
+        "STB": "CAN1_STB",
+    })
+    flow(c, "C11", "100n VCC", {"1": "+5V", "2": "GND"})
+    flow(c, "C12", "100n VIO", {"1": "+1V8", "2": "GND"})
+
+    # Split termination rather than a single 120R: the midpoint capacitor
+    # shunts common-mode noise to ground, which is worth having on a bus
+    # leaving the enclosure on a harness in a car.
+    flow(r, "R19", "60R term", {"1": "CAN1_H", "2": "CAN1_SPLIT"})
+    flow(r, "R20", "60R term", {"1": "CAN1_SPLIT", "2": "CAN1_L"})
+    flow(c, "C13", "4n7 split", {"1": "CAN1_SPLIT", "2": "GND"})
+
+    # STB has an internal pull-up, so the part wakes in STANDBY. Pulling
+    # it down selects normal mode by default; a module GPIO can be added
+    # later to reclaim low-power standby.
+    flow(r, "R21", "10k STB pd", {"1": "CAN1_STB", "2": "GND"})
+
+    flow(conn_can, "J3", "CAN to ECU",
+         {"CANH": "CAN1_H", "CANL": "CAN1_L", "GND": "GND"})
+
+
 def main():
     x1_lib = build_x1_symbol()
     gnd_lib = rail("GND")
@@ -534,7 +627,7 @@ def main():
         row, col = divmod(idx, 4)
         positions.append((70.0 + col * col_pitch, 95.0 + row * 210.0))
 
-    n_gnd = n_v5 = n_nc = 0
+    n_gnd = n_v5 = n_nc = n_sig = 0
     gnd_net_xy, v5_net_xy = [], []
     for idx, ((label, desc, entries), (sx, sy)) in enumerate(
             zip(units, positions), start=1):
@@ -565,6 +658,12 @@ def main():
                     v5_net_xy.append((wx, wy))
                     power_net_points.setdefault("+5V", (wx, wy))
                     n_v5 += 1
+            elif name in X1_NETS:
+                out = -1 if unit_pin_offsets[(idx, pin)][0] < 0 else 1
+                wx, wy = snap(px + out * STUB), py
+                add_wire(px, py, wx, wy)
+                add_label(X1_NETS[name], wx, wy, 0 if out > 0 else 180)
+                n_sig += 1
             elif label.startswith("E"):
                 # Deliberately unused. This project's KiCad notes record
                 # that a stub wire plus a unique local label reads to ERC
@@ -574,6 +673,7 @@ def main():
                 n_nc += 1
 
     build_power_tree(610.0, 55.0)
+    build_1v8_and_can(320.0, 392.0, 150.0)
 
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from
@@ -581,9 +681,14 @@ def main():
     # each net, because this project's KiCad notes record that a flag
     # relying only on name-based net merging, with no wire or coincident
     # point touching it, does not satisfy that ERC check.
-    for n, net in enumerate(sorted(power_net_points), start=1):
+    undriven = [n for n in sorted(power_net_points) if n not in driven_nets]
+    for n, net in enumerate(undriven, start=1):
         place(build_pwr_flag(net), f"#FLG{n}", f"PWR_FLAG {net}",
               *power_net_points[net], hide_ref=True)
+    print(f"  PWR_FLAGs on undriven rails: {', '.join(undriven)}")
+    if driven_nets:
+        print(f"  rails with a real driver (no flag): "
+              f"{', '.join(sorted(driven_nets))}")
 
     # Sheet extent sanity check - this project's KiCad notes record content
     # silently running off a fixed-size sheet with no warning in the editor.
@@ -630,7 +735,9 @@ def main():
     print(f"  X1: {total_pins} pins across {len(units)} units")
     print(f"  connected: {n_gnd} GND, {n_v5} VCC")
     print(f"  no-connect: {n_nc}")
-    print(f"  left for later stages: {total_pins - n_gnd - n_v5 - n_nc}")
+    print(f"  signal nets wired: {n_sig}")
+    print(f"  left for later stages: "
+          f"{total_pins - n_gnd - n_v5 - n_nc - n_sig}")
 
 
 if __name__ == "__main__":

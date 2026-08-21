@@ -120,12 +120,44 @@ LM61460_Q1 = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# TLV767-Q1 - automotive 16 V, 1 A linear regulator, adjustable version.
+# Source: TI SBVS381A, April 2020, revised December 2020. 8-pin WSON (DRB).
+#
+# Chosen as an LDO rather than a buck deliberately: the 1.8 V rail feeds
+# the DSI-to-LVDS bridge and the CAN transceiver's VIO, the load is small,
+# and a linear regulator contributes no switching noise to a board that
+# already has LVDS and a car radio sharing an enclosure.
+#
+# GOTCHA: pin 3 differs between versions - FB on the adjustable part,
+# SNS on the fixed part. This design uses the ADJUSTABLE version, so
+# pin 3 is FB and drives the output through an external divider. Neither
+# may float.
+#
+# NOTE (contrast with the LM74930-Q1 above): this thermal pad MAY be
+# grounded - "connect this pad to ground or leave floating", and a large
+# ground plane is preferred for thermals. Do not generalise either part's
+# pad rule to the other.
+# ---------------------------------------------------------------------------
+TLV767_Q1 = [
+    (1, "OUT", "power_out"),
+    (2, "NC1", "no_connect"),   # not internally connected; may tie to GND
+    (3, "FB",  "input"),        # adjustable version; do not float
+    (4, "GND", "power_in"),
+    (5, "EN",  "input"),        # internal pull-up; may float to enable
+    (6, "GND2", "power_in"),
+    (7, "NC2", "no_connect"),
+    (8, "IN",  "power_in"),
+]
+
+
 def verify():
     """Sanity-check the tables before anything builds symbols from them."""
     problems = []
     for name, pins in (("LM74930_Q1", LM74930_Q1),
                        ("TCAN1044V_Q1", TCAN1044V_Q1),
-                       ("LM61460_Q1", LM61460_Q1)):
+                       ("LM61460_Q1", LM61460_Q1),
+                       ("TLV767_Q1", TLV767_Q1)):
         numbers = [p[0] for p in pins]
         if numbers != list(range(1, len(pins) + 1)):
             problems.append(f"{name}: pin numbers are not 1..{len(pins)} "
@@ -143,6 +175,8 @@ def verify():
     if len(LM61460_Q1) != 14:
         problems.append(f"LM61460_Q1 should have 14 pins, "
                         f"has {len(LM61460_Q1)}")
+    if len(TLV767_Q1) != 8:
+        problems.append(f"TLV767_Q1 should have 8 pins, has {len(TLV767_Q1)}")
     return problems
 
 
@@ -152,7 +186,8 @@ if __name__ == "__main__":
     problems = verify()
     for name, pins in (("LM74930-Q1 (VQFN-24)", LM74930_Q1),
                        ("TCAN1044V-Q1 (SOIC-8)", TCAN1044V_Q1),
-                       ("LM61460-Q1 (VQFN-HR-14)", LM61460_Q1)):
+                       ("LM61460-Q1 (VQFN-HR-14)", LM61460_Q1),
+                       ("TLV767-Q1 (WSON-8)", TLV767_Q1)):
         print(f"\n=== {name}: {len(pins)} pins ===")
         for num, pname, etype in pins:
             print(f"   {num:2d}  {pname:<8s} {etype}")

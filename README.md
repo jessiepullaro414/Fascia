@@ -12,22 +12,26 @@ from it:
 
 1. **Carrier board** (behind the dash) — a Toradex Verdin iMX95 System on
    Module on a custom carrier: automotive 12V front end, LVDS display
-   output, backlight control, CAN FD to talk to `ecu-pcb`, and the touch
-   I2C bus.
+   output via a DSI-to-LVDS bridge, backlight control, CAN FD to talk to
+   `ecu-pcb`, line-level audio pre-outs to an external amplifier, a
+   microphone input, and USB-C for wired CarPlay / Android Auto.
 2. **Panel board** (in the bezel) — terminates the ribbon at the screen:
    panel LVDS connector, capacitive touch controller, backlight LED
    connector.
 
+Bluetooth and Wi-Fi need no carrier hardware — they come with the
+module's `WB` variant.
+
 ## Status
 
-**Schematic in progress — connector and power tree wired.**
+**Schematic in progress — connector, power tree and CAN wired.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
-containing the Verdin iMX95 X1 connector, the 12 V automotive front end
-and the main 5 V buck. No PCB yet.
+containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
+the 5 V buck, the 1.8 V LDO and the CAN FD link. No PCB yet.
 
-`kicad-cli sch erc` reports **51 violations, all expected**: 50 X1 pins
-in the control, display and communications banks awaiting the bridge,
-transceiver, codec and panel connector, plus `IGN_SENSE`, which has no
+`kicad-cli sch erc` reports **49 violations, all expected**: 48 X1 pins
+in the control, display and remaining communications banks awaiting the
+bridge, codec and panel connector, plus `IGN_SENSE`, which has no
 destination until the ignition-sense path reaches a module ADC pin.
 
 What is already final:
@@ -42,7 +46,17 @@ What is already final:
 - **LM61460-Q1 5 V buck fully wired** — `BIAS` to the output rail (valid
   because Vout ≤ 12 V), boot network through `RBOOT`, FB and EN dividers,
   `RT`, and pull-ups on the open-drain `FLT` and `PGOOD` outputs
-- every pin on both regulators either netted or explicitly NoConnected
+- **TLV767-Q1 1.8 V LDO wired** — an LDO rather than a buck on purpose:
+  small load, and no switching noise added to a board carrying LVDS next
+  to a car radio. This rail exists because the module's I/O is 1.8 V
+  logic; it feeds the CAN transceiver's VIO now and the bridge later
+- **TCAN1044V-Q1 CAN FD link wired** — split termination (2×60 Ω with a
+  midpoint capacitor to ground, which shunts common-mode noise on a bus
+  leaving the enclosure on a harness), separate 5 V VCC and 1.8 V VIO
+  decoupling, and a pull-down on `STB` because the part's internal
+  pull-up would otherwise wake it in standby
+- the module's `CAN_1_TX` / `CAN_1_RX` now reach the transceiver
+- every pin on all four ICs either netted or explicitly NoConnected
 
 What exists right now:
 
@@ -57,8 +71,8 @@ What exists right now:
 - `build_schematic.py` — generates `Fascia.kicad_sch`, `Fascia.kicad_sym`,
   `sym-lib-table` and (on first run only) `Fascia.kicad_pro`.
 
-Three things that were needed to get ERC down from 268 findings to the
-50 real ones, recorded because each cost a debug cycle:
+Three things that were needed to get the first ERC pass down from 268
+findings to the real ones, recorded because each cost a debug cycle:
 
 1. **Power symbols must touch the net graphically.** A power symbol's own
    pin sits at its local origin with zero length, so placing it *near* a
