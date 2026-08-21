@@ -1197,14 +1197,23 @@ def main():
     # Every footprint named in parts.FOOTPRINTS must really exist. A typo
     # in a library path is otherwise invisible until the netlist reaches
     # the PCB editor and silently drops the part.
-    fp_root = r"C:\Program Files\KiCad\10.0\share\kicad\footprints"
+    # Two roots: KiCad's own libraries, and this project's generated
+    # ones. The LM61460-Q1's VQFN-HR package has no stock footprint,
+    # so it lives in footprints/ and is built by
+    # tools/build_lm61460_footprint.py.
+    fp_roots = [
+        os.path.join('C:' + os.sep, 'Program Files', 'KiCad', '10.0',
+                     'share', 'kicad', 'footprints'),
+        os.path.join(HERE, 'footprints'),
+    ]
     missing_fp = []
     for name, fp in sorted(parts.FOOTPRINTS.items()):
         if not fp:
             continue
-        lib, _, fpname = fp.partition(":")
-        path = os.path.join(fp_root, lib + ".pretty", fpname + ".kicad_mod")
-        if not os.path.exists(path):
+        lib, _, fpname = fp.partition(':')
+        rel = os.path.join(lib + '.pretty', fpname + '.kicad_mod')
+        if not any(os.path.exists(os.path.join(r, rel))
+                   for r in fp_roots):
             missing_fp.append(f"{name} -> {fp}")
     if missing_fp:
         print(f"  ERROR: {len(missing_fp)} footprint(s) not found:")

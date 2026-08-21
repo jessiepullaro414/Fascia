@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "TI_RJR0014A_VQFN-HR") (type "KiCad") (uri "${KIPRJMOD}/footprints/TI_RJR0014A_VQFN-HR.pretty") (options "") (descr "TI VQFN-HR-14 (RJR0014A) for LM61460-Q1, 4x3.5mm body. Non-uniform pads, four L-shaped corner pads. Geometry extracted from the vector art of TI SNVSB70F page 55 - see tools/build_lm61460_footprint.py"))
+)

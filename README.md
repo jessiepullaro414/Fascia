@@ -44,13 +44,43 @@ blocked on a datasheet that has not arrived or deliberately optional:
 
 **160 pins carry real NoConnect items and 40 signal nets are wired.**
 
-**Footprints are assigned and verified.** Every part except one maps to a
-KiCad library footprint, and the build checks that each named file
-actually exists — a mistyped library path is otherwise invisible until
-the netlist reaches the PCB editor and silently drops the part. The one
-gap is the **LM61460-Q1**, whose RJR (VQFN-HR-14) package has no KiCad
-footprint and needs generating, the same way the sibling projects
-generate their odd packages.
+**Footprints are assigned and verified.** Every part maps to a real
+footprint, and the build checks that each named file actually exists — a
+mistyped library path is otherwise invisible until the netlist reaches
+the PCB editor and silently drops the part.
+
+### The LM61460-Q1 footprint is generated, not borrowed
+
+TI's RJR0014A (VQFN-HR-14) has no KiCad library footprint, and it is not
+something a generic QFN generator can produce: the pads are all different
+sizes, unevenly spaced, and **the four corner pads are L-shaped**.
+
+`tools/build_lm61460_footprint.py` builds it. The geometry is not
+eyeballed off the drawing — the LAND PATTERN EXAMPLE on page 55 of TI
+SNVSB70F is real vector art, so the pad rectangles were extracted from
+the PDF's own path data and only the *scale* had to be inferred, from a
+dimension the drawing states outright (pad 10 is 2.4 × 0.4 mm). That
+scale then reproduced pad 10's 0.400 mm height exactly, which is what
+makes the rest of the extraction trustworthy.
+
+Each L-shaped pad is built from **two rectangles sharing one pad
+number** — a real KiCad construction this project has met before, in a
+Keystone fuse holder with two physical pads both numbered "1". It is far
+safer than approximating an L with its bounding box, which would put
+copper in the notch and eat the clearance to the neighbouring pads.
+
+All four notches face the *outer* corner of the pattern, confirmed by
+rendering the drawing around pads 1, 9 and 11 rather than assuming the
+symmetry held.
+
+The generator verifies itself twice: internally, that the pad table is
+coherent (pin numbering, which pads are L-shaped, pad 10's dimensions,
+overall extent, and that no two *different* pins overlap), and then by
+**loading the result back through KiCad's own engine**. That second check
+earned its place immediately — the first version emitted trailing
+`; PINNAME` comments on the pad lines, and KiCad's s-expression format
+has no comment syntax, so the whole library failed to load with nothing
+more useful than "Unable to load library".
 
 The Verdin module plugs into a standard DDR4 SODIMM socket, and KiCad's
 `SODIMM-260_DDR4_H4.0-5.2_OrientationStd_Socket` has exactly 260 pads

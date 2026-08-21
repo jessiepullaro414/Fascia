@@ -493,10 +493,9 @@ FOOTPRINTS = {
     "SN65DSI85-Q1":    "Package_QFP:Texas_TQFP-64-1EP_10x10mm_P0.5mm_EP8x8mm_Mask4.44x4.44mm",
     "PCM3168A-Q1":     "Package_QFP:Texas_TQFP-64-1EP_10x10mm_P0.5mm_EP8x8mm_Mask4.44x4.44mm",
     "SN74AXC4T245-Q1": "Package_SO:TSSOP-16_4.4x5mm_P0.65mm",
-    # LM61460-Q1 is the one gap: its RJR (VQFN-HR-14) package has no
-    # KiCad footprint and needs a generated one, the same way the sibling
-    # projects generate their odd packages.
-    "LM61460-Q1":      "",
+    # Generated rather than from a KiCad library: the RJR (VQFN-HR-14)
+    # package has no stock footprint. See tools/build_lm61460_footprint.py.
+    "LM61460-Q1":      "TI_RJR0014A_VQFN-HR:TI_RJR0014A_VQFN-HR-14_4x3.5mm",
     "R":    "Resistor_SMD:R_0603_1608Metric",
     "C":    "Capacitor_SMD:C_0603_1608Metric",
     "L":    "Inductor_SMD:L_1210_3225Metric",
