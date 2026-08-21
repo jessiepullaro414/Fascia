@@ -228,6 +228,124 @@ SN65DSI85_Q1 = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# PCM3168A-Q1 - automotive 24-bit 6-in / 8-out audio codec.
+# Source: TI SBAS452A, September 2008, revised January 2016. 64-pin HTQFP
+# with PowerPAD (PAP).
+#
+# GOTCHA, and the important one: this part has TWO supply domains -
+# analog VCC at 4.5-5.5 V and digital VDD at 3.0-3.6 V. VDD cannot be run
+# at 1.8 V, so it cannot be wired directly to the Verdin. Its VIH minimum
+# is 2 V, above what a 1.8 V output can guarantee, and its VOH minimum is
+# 2.4 V, ABOVE the module's 2.1 V absolute maximum on 1.8 V I/O. The
+# codec-to-module direction would therefore not merely fail, it would
+# damage the module. Every digital line between them is level shifted.
+#
+# GOTCHA: MODE (48) selects the control port. Tied to DGND it is I2C,
+# which is what this design uses. Tied to VDD it would be SPI.
+#
+# NOTE: PowerPAD is connected to ANALOG ground on this part.
+# ---------------------------------------------------------------------------
+PCM3168A_Q1 = [
+    ( 1, "VCOMAD", "passive"),
+    ( 2, "AGNDAD2", "power_in"),
+    ( 3, "VCCAD2", "power_in"),
+    ( 4, "RST", "input"),
+    ( 5, "OVF", "output"),
+    ( 6, "LRCKAD", "bidirectional"),
+    ( 7, "BCKAD", "bidirectional"),
+    ( 8, "DOUT1", "output"),
+    ( 9, "DOUT2", "output"),
+    (10, "DOUT3", "output"),
+    (11, "DGND2", "power_in"),
+    (12, "VDD2", "power_in"),
+    (13, "ZERO", "output"),
+    (14, "VCCDA1", "power_in"),
+    (15, "VCOMDA", "passive"),
+    (16, "AGNDDA1", "power_in"),
+    (17, "VOUT8P", "output"),
+    (18, "VOUT8N", "output"),
+    (19, "VOUT7P", "output"),
+    (20, "VOUT7N", "output"),
+    (21, "VOUT6P", "output"),
+    (22, "VOUT6N", "output"),
+    (23, "VOUT5P", "output"),
+    (24, "VOUT5N", "output"),
+    (25, "VOUT4P", "output"),
+    (26, "VOUT4N", "output"),
+    (27, "VOUT3P", "output"),
+    (28, "VOUT3N", "output"),
+    (29, "VOUT2P", "output"),
+    (30, "VOUT2N", "output"),
+    (31, "VOUT1P", "output"),
+    (32, "VOUT1N", "output"),
+    (33, "AGNDDA2", "power_in"),
+    (34, "VCCDA2", "power_in"),
+    (35, "LRCKDA", "bidirectional"),
+    (36, "BCKDA", "bidirectional"),
+    (37, "DIN1", "input"),
+    (38, "DIN2", "input"),
+    (39, "DIN3", "input"),
+    (40, "DIN4", "input"),
+    (41, "SCKI", "input"),
+    (42, "SCL", "input"),
+    (43, "SDA", "bidirectional"),
+    (44, "ADR1", "bidirectional"),
+    (45, "ADR0", "input"),
+    (46, "VDD1", "power_in"),
+    (47, "DGND1", "power_in"),
+    (48, "MODE", "input"),
+    (49, "VCCAD1", "power_in"),
+    (50, "AGNDAD1", "power_in"),
+    (51, "VIN1N", "input"),
+    (52, "VIN1P", "input"),
+    (53, "VIN2N", "input"),
+    (54, "VIN2P", "input"),
+    (55, "VIN3N", "input"),
+    (56, "VIN3P", "input"),
+    (57, "VIN4N", "input"),
+    (58, "VIN4P", "input"),
+    (59, "VREFAD1", "passive"),
+    (60, "VREFAD2", "passive"),
+    (61, "VIN5N", "input"),
+    (62, "VIN5P", "input"),
+    (63, "VIN6N", "input"),
+    (64, "VIN6P", "input"),
+]
+
+
+# ---------------------------------------------------------------------------
+# SN74AXC4T245-Q1 - automotive 4-bit dual-supply level translator.
+# Source: TI SCES905F, July 2019, revised January 2024. 16-pin TSSOP (PW).
+#
+# Two independent direction controls (1DIR, 2DIR) split it into two 2-bit
+# banks, so one device can translate in both directions at once. Both
+# rails are independently 0.65-3.6 V, and it reaches 380 Mbps translating
+# 1.8 V to 3.3 V - comfortably past what I2S needs here.
+#
+# GOTCHA: OE is active LOW for enable ("pull OE high to place outputs in
+# tri-state"), and DIR/OE are referenced to VCCA, not VCCB.
+# ---------------------------------------------------------------------------
+SN74AXC4T245_Q1 = [
+    (1,  "VCCA", "power_in"),
+    (2,  "1DIR", "input"),
+    (3,  "2DIR", "input"),
+    (4,  "1A1",  "bidirectional"),
+    (5,  "1A2",  "bidirectional"),
+    (6,  "2A1",  "bidirectional"),
+    (7,  "2A2",  "bidirectional"),
+    (8,  "GND1", "power_in"),
+    (9,  "GND2", "power_in"),
+    (10, "2B2",  "bidirectional"),
+    (11, "2B1",  "bidirectional"),
+    (12, "1B2",  "bidirectional"),
+    (13, "1B1",  "bidirectional"),
+    (14, "2OE",  "input"),
+    (15, "1OE",  "input"),
+    (16, "VCCB", "power_in"),
+]
+
+
 def verify():
     """Sanity-check the tables before anything builds symbols from them."""
     problems = []
@@ -235,7 +353,9 @@ def verify():
                        ("TCAN1044V_Q1", TCAN1044V_Q1),
                        ("LM61460_Q1", LM61460_Q1),
                        ("TLV767_Q1", TLV767_Q1),
-                       ("SN65DSI85_Q1", SN65DSI85_Q1)):
+                       ("SN65DSI85_Q1", SN65DSI85_Q1),
+                       ("PCM3168A_Q1", PCM3168A_Q1),
+                       ("SN74AXC4T245_Q1", SN74AXC4T245_Q1)):
         numbers = [p[0] for p in pins]
         if numbers != list(range(1, len(pins) + 1)):
             problems.append(f"{name}: pin numbers are not 1..{len(pins)} "
@@ -263,6 +383,19 @@ def verify():
     ncc = sum(1 for _, n, _ in SN65DSI85_Q1 if n.startswith("VCC"))
     if ncc != 12:
         problems.append(f"SN65DSI85_Q1 should have 12 VCC pins, has {ncc}")
+    if len(PCM3168A_Q1) != 64:
+        problems.append(f"PCM3168A_Q1 should have 64 pins, "
+                        f"has {len(PCM3168A_Q1)}")
+    if len(SN74AXC4T245_Q1) != 16:
+        problems.append(f"SN74AXC4T245_Q1 should have 16 pins, "
+                        f"has {len(SN74AXC4T245_Q1)}")
+    # Eight differential DAC outputs and six differential ADC inputs.
+    for pre, want, what in (("VOUT", 16, "DAC output"),
+                            ("VIN", 12, "ADC input")):
+        got = sum(1 for _, n, _ in PCM3168A_Q1 if n.startswith(pre))
+        if got != want:
+            problems.append(f"PCM3168A_Q1 should have {want} {what} pins, "
+                            f"has {got}")
     return problems
 
 
@@ -274,7 +407,9 @@ if __name__ == "__main__":
                        ("TCAN1044V-Q1 (SOIC-8)", TCAN1044V_Q1),
                        ("LM61460-Q1 (VQFN-HR-14)", LM61460_Q1),
                        ("TLV767-Q1 (WSON-8)", TLV767_Q1),
-                       ("SN65DSI85-Q1 (HTQFP-64)", SN65DSI85_Q1)):
+                       ("SN65DSI85-Q1 (HTQFP-64)", SN65DSI85_Q1),
+                       ("PCM3168A-Q1 (HTQFP-64)", PCM3168A_Q1),
+                       ("SN74AXC4T245-Q1 (TSSOP-16)", SN74AXC4T245_Q1)):
         print(f"\n=== {name}: {len(pins)} pins ===")
         for num, pname, etype in pins:
             print(f"   {num:2d}  {pname:<8s} {etype}")

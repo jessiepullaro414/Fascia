@@ -24,13 +24,13 @@ module's `WB` variant.
 
 ## Status
 
-**Schematic in progress — display path complete end to end.**
+**Schematic in progress — display and audio paths wired.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
 containing the Verdin iMX95 X1 connector, the 12 V automotive front end,
 the 5 V buck, the 1.8 V LDO, the CAN FD link, and the SN65DSI85-Q1
 bridge with its panel connector. No PCB yet.
 
-`kicad-cli sch erc` reports **37 violations, all expected**, and the
+`kicad-cli sch erc` reports **35 violations, all expected**, and the
 remaining set is checked by bank rather than by count:
 
 | Bank | Left | Waiting on |
@@ -38,7 +38,7 @@ remaining set is checked by bank rather than by count:
 | A | 3 | `VCC_BACKUP`, `PWR_1V8_MOCI`, `PMIC_PGOOD` |
 | B | 16 | the control / sequencing block |
 | C | **2** | `PWM_3_DSI` and `GPIO_10_DSI` — backlight, blocked on the panel datasheet |
-| D | 14 | audio codec I2C, USB-C, second CAN |
+| D | 12 | USB-C (10) and the second CAN (2) |
 
 plus `IGN_SENSE` and `DSI_IRQ`, which have no destination yet.
 
@@ -77,7 +77,37 @@ What is already final:
   with NoConnect items rather than tied off
 - `J4` panel LVDS connector, **provisional** — carries all 20 LVDS
   signals, but its real pin order and pin count await the panel datasheet
-- every pin on all five ICs either netted or explicitly NoConnected
+- **PCM3168A-Q1 audio codec wired** — five differential pre-outs (front
+  L/R, rear L/R, sub) to `J5`, microphone into the first differential ADC
+  input, TDM on `DIN1`, `MODE` strapped low for the I2C control port
+- **A 3.3 V rail and two SN74AXC4T245-Q1 level shifters**, because the
+  codec's digital domain cannot be wired directly to the module — see
+  "The audio block needs level shifters" below
+- **I2C crosses domains through the classic two-FET translator** rather
+  than a push-pull part, which cannot pass an open-drain bus
+- every pin on all eight ICs either netted or explicitly NoConnected
+
+### The audio block needs level shifters (and why that is not optional)
+
+The PCM3168A-Q1 has two supply domains: analog VCC at 4.5–5.5 V and
+**digital VDD at 3.0–3.6 V**. VDD cannot be run at 1.8 V, so the codec
+cannot share the module's logic level. Reading the electrical table
+makes the consequence sharper than "it needs a translator":
+
+| | Codec | Verdin |
+| --- | --- | --- |
+| Input high, min | **2.0 V** | drives 1.8 V max |
+| Output high, min | **2.4 V** | **2.1 V absolute maximum** |
+
+The first row means the module cannot reliably drive the codec. The
+second row is the dangerous one: the codec's output high is *above the
+module's absolute maximum rating*. Wired directly, the codec-to-module
+direction would not merely fail — it would damage the module.
+
+So every digital line between them is translated: I2S and the clocks
+through SN74AXC4T245-Q1 translators, and I2C through the classic
+two-N-FET open-drain circuit, because a push-pull translator cannot pass
+a bus where either end may pull low.
 
 What exists right now:
 

@@ -52,13 +52,15 @@ OUT_SYM = os.path.join(HERE, "Fascia.kicad_sym")
 OUT_TABLE = os.path.join(HERE, "sym-lib-table")
 OUT_PRO = os.path.join(HERE, "Fascia.kicad_pro")
 
-# A1: the 260-pin connector alone fills an A2, and the power tree needs
-# its own band beside it. This project's KiCad notes record that content
+# A0. The 260-pin connector alone fills an A2; adding the power tree,
+# bridge, CAN and audio blocks filled A1 to the point where two sections
+# collided and silently merged a net. Each block now gets its own band
+# with real separation between them. This project's KiCad notes record that content
 # running off a fixed sheet is invisible in the editor and only shows on
 # a real fixed-size export, so main() checks every placement against the
 # sheet bounds.
-PAPER = "A1"
-SHEET_W, SHEET_H = 841.0, 594.0
+PAPER = "A0"
+SHEET_W, SHEET_H = 1189.0, 841.0
 
 GRID = 1.27
 PITCH = 2.54          # pin-to-pin spacing down a symbol side
@@ -86,6 +88,15 @@ X1_NETS = {
     "DSI_1_CLK_P": "DSI_CLK_P", "DSI_1_CLK_N": "DSI_CLK_N",
     "I2C_2_DSI_SDA": "DSI_I2C_SDA", "I2C_2_DSI_SCL": "DSI_I2C_SCL",
     "GPIO_9_DSI": "DSI_BRIDGE_EN",
+    # Audio. Every one of these crosses a voltage domain on its way to the
+    # codec - see build_audio() for why that is not optional.
+    "I2S_1_BCLK":  "I2S_BCK_1V8",
+    "I2S_1_SYNC":  "I2S_LRCK_1V8",
+    "I2S_1_D_OUT": "I2S_DIN_1V8",     # module out -> codec DIN
+    "I2S_1_D_IN":  "CODEC_DOUT_1V8",  # codec DOUT -> module in
+    "I2S_1_MCLK":  "I2S_SCKI_1V8",    # master clock -> codec SCKI
+    "I2C_1_SDA":   "I2C1_SDA_1V8",
+    "I2C_1_SCL":   "I2C1_SCL_1V8",
 }
 
 
@@ -300,7 +311,7 @@ def pin_xy(unit, pin, sym_x, sym_y):
 # pins, so ERC needs them driven. Both arrive through passive parts (a
 # fuse, and the ideal-diode FET), so nothing on the sheet "drives" them
 # and each needs a PWR_FLAG the same way GND and +5V do.
-POWER_NETS = {"GND", "+5V", "+12V_PROT", "+1V8", "VBAT_F"}
+POWER_NETS = {"GND", "+5V", "+12V_PROT", "+1V8", "+3V3", "VBAT_F"}
 
 # net -> a real (x, y) on that net, for anchoring PWR_FLAGs. This project's
 # KiCad notes record that a flag merged only by name, with nothing
@@ -417,7 +428,26 @@ def add_label(text, x, y, angle):
         uuid=U()))
 
 
-def build_power_tree(x0, y0):
+def build_common_symbols():
+    """
+    The generic two- and three-terminal parts every block reuses.
+
+    Built once, before any section runs. They used to be created inside
+    build_power_tree(), which worked only while that happened to be the
+    first block called - reordering the sections turned it into a
+    KeyError. Shared state belongs at the top, not in whichever caller
+    ran first.
+    """
+    build_generic_symbol(f"{LIB}:R", "R", "R", PASSIVE_PINS)
+    build_generic_symbol(f"{LIB}:C", "C", "C", PASSIVE_PINS)
+    build_generic_symbol(f"{LIB}:L", "L", "L", PASSIVE_PINS)
+    build_generic_symbol(f"{LIB}:TVS", "D", "TVS", PASSIVE_PINS)
+    build_generic_symbol(f"{LIB}:FUSE", "F", "Fuse", PASSIVE_PINS)
+    build_generic_symbol(f"{LIB}:NFET", "Q", "NFET", NFET_PINS)
+    build_generic_symbol(f"{LIB}:TLV767-Q1", "U", "TLV767-Q1", parts.TLV767_Q1)
+
+
+def build_power_tree(x0, y0, usable_h):
     """
     12 V automotive front end and the main 5 V buck.
 
@@ -427,12 +457,8 @@ def build_power_tree(x0, y0):
     Q2 (pass, HGATE) and Q1 (ideal diode, DGATE) share a COMMON source
     node, and both the A and OUT pins sit on it.
     """
-    r = build_generic_symbol(f"{LIB}:R", "R", "R", PASSIVE_PINS)
-    c = build_generic_symbol(f"{LIB}:C", "C", "C", PASSIVE_PINS)
-    l = build_generic_symbol(f"{LIB}:L", "L", "L", PASSIVE_PINS)
-    tvs = build_generic_symbol(f"{LIB}:TVS", "D", "TVS", PASSIVE_PINS)
-    fuse = build_generic_symbol(f"{LIB}:FUSE", "F", "Fuse", PASSIVE_PINS)
-    nfet = build_generic_symbol(f"{LIB}:NFET", "Q", "NFET", NFET_PINS)
+    r, c, l = f"{LIB}:R", f"{LIB}:C", f"{LIB}:L"
+    tvs, fuse, nfet = f"{LIB}:TVS", f"{LIB}:FUSE", f"{LIB}:NFET"
     conn3 = build_generic_symbol(f"{LIB}:CONN3", "J", "Power in",
                                  [(1, "VBAT", "passive"), (2, "GND", "passive"),
                                   (3, "IGN", "passive")])
@@ -446,7 +472,7 @@ def build_power_tree(x0, y0):
     # the right; `flow` wraps to the next column rather than running off
     # the bottom, and main() still checks every placement against the
     # sheet bounds afterwards.
-    COL_W, ROW_H, USABLE_H = 78.0, 26.0, 470.0
+    COL_W, ROW_H = 78.0, 26.0
     cur = {"col": 0, "y": y0}
 
     def flow(lib, ref, value, nets):
@@ -461,7 +487,7 @@ def build_power_tree(x0, y0):
         """
         h = generic_heights[lib]
         need = max(ROW_H, h + 12.0)
-        if cur["y"] + need > y0 + USABLE_H:
+        if cur["y"] + need > y0 + usable_h:
             cur["col"] += 1
             cur["y"] = y0
         place_part(lib, ref, value,
@@ -552,8 +578,7 @@ def build_1v8_and_can(x0, y0, usable_h):
     """
     r = f"{LIB}:R"
     c = f"{LIB}:C"
-    u_ldo = build_generic_symbol(f"{LIB}:TLV767-Q1", "U", "TLV767-Q1",
-                                 parts.TLV767_Q1)
+    u_ldo = f"{LIB}:TLV767-Q1"
     u_can = build_generic_symbol(f"{LIB}:TCAN1044V-Q1", "U", "TCAN1044V-Q1",
                                  parts.TCAN1044V_Q1)
     conn_can = build_generic_symbol(f"{LIB}:CONN_CAN", "J", "CAN",
@@ -706,6 +731,169 @@ def build_bridge(x0, y0, usable_h):
     flow(conn_panel, "J4", "Panel LVDS (provisional)", panel)
 
 
+def build_audio(x0, y0, usable_h):
+    """
+    3.3 V rail, level shifters, PCM3168A-Q1 codec, pre-outs and microphone.
+
+    The level shifters are not optional and not defensive. The codec's
+    digital domain is 3.0-3.6 V: its VIH minimum is 2 V, which a 1.8 V
+    output cannot guarantee, and its VOH minimum is 2.4 V against the
+    module's 2.1 V ABSOLUTE MAXIMUM on 1.8 V I/O. Wired directly, the
+    codec-to-module direction would damage the module.
+
+    I2S goes through SN74AXC4T245-Q1 translators. I2C uses the classic
+    two-FET open-drain translator instead, because a push-pull translator
+    cannot pass a bus where either end may pull low.
+    """
+    r, c, nfet = f"{LIB}:R", f"{LIB}:C", f"{LIB}:NFET"
+    u_ldo = f"{LIB}:TLV767-Q1"
+    u_sh = build_generic_symbol(f"{LIB}:SN74AXC4T245-Q1", "U",
+                                "SN74AXC4T245-Q1", parts.SN74AXC4T245_Q1)
+    u_cod = build_generic_symbol(f"{LIB}:PCM3168A-Q1", "U", "PCM3168A-Q1",
+                                 parts.PCM3168A_Q1)
+    pre_pins = []
+    n = 1
+    for nm in ("FL", "FR", "RL", "RR", "SUB"):
+        pre_pins.append((n, nm + "_P", "passive")); n += 1
+        pre_pins.append((n, nm + "_N", "passive")); n += 1
+    pre_pins.append((n, "GND", "passive"))
+    conn_pre = build_generic_symbol(f"{LIB}:CONN_PREOUT", "J", "Pre-outs",
+                                    pre_pins)
+    conn_mic = build_generic_symbol(f"{LIB}:CONN_MIC", "J", "Mic",
+                                    [(1, "MIC_P", "passive"),
+                                     (2, "MIC_N", "passive"),
+                                     (3, "GND", "passive")])
+
+    COL_W, ROW_H = 80.0, 26.0
+    cur = {"col": 0, "y": y0}
+
+    def flow(lib, ref, value, nets):
+        h = generic_heights[lib]
+        need = max(ROW_H, h + 12.0)
+        if cur["y"] + need > y0 + usable_h:
+            cur["col"] += 1
+            cur["y"] = y0
+        place_part(lib, ref, value,
+                   x0 + cur["col"] * COL_W, cur["y"] + h / 2, nets)
+        cur["y"] += need
+
+    # --- 3.3 V rail: the same TLV767-Q1 again, different divider --------
+    flow(u_ldo, "U6", "TLV767-Q1 3V3", {
+        "IN": "+5V", "OUT": "+3V3", "FB": "FB_3V3",
+        "GND": "GND", "GND2": "GND", "EN": "+5V",
+        "NC1": None, "NC2": None,
+    })
+    flow(c, "C22", "10u in", {"1": "+5V", "2": "GND"})
+    flow(c, "C23", "10u out", {"1": "+3V3", "2": "GND"})
+    flow(r, "R23", "FB top", {"1": "+3V3", "2": "FB_3V3"})
+    flow(r, "R24", "FB bot", {"1": "FB_3V3", "2": "GND"})
+
+    # --- level shifters -------------------------------------------------
+    # OE is active LOW, and DIR/OE are referenced to VCCA (the 1.8 V side).
+    flow(u_sh, "U7", "SN74AXC4T245-Q1", {
+        "VCCA": "+1V8", "VCCB": "+3V3", "GND1": "GND", "GND2": "GND",
+        "1DIR": "+1V8", "2DIR": "+1V8",
+        "1OE": "GND", "2OE": "GND",
+        "1A1": "I2S_BCK_1V8",  "1B1": "I2S_BCK_3V3",
+        "1A2": "I2S_LRCK_1V8", "1B2": "I2S_LRCK_3V3",
+        "2A1": "I2S_DIN_1V8",  "2B1": "I2S_DIN_3V3",
+        "2A2": "I2S_SCKI_1V8", "2B2": "I2S_SCKI_3V3",
+    })
+    flow(u_sh, "U8", "SN74AXC4T245-Q1", {
+        "VCCA": "+1V8", "VCCB": "+3V3", "GND1": "GND", "GND2": "GND",
+        "1DIR": "GND",
+        "2DIR": "+1V8",
+        "1OE": "GND", "2OE": "GND",
+        "1B1": "CODEC_DOUT_3V3", "1A1": "CODEC_DOUT_1V8",
+        # Unused translator inputs are tied off, never floated; which side
+        # is the input depends on that bank's DIR.
+        # Tied off through resistors, not hard-wired to the rail: these
+        # are I/O pins, and a bidirectional pin strapped straight to a
+        # supply is a short the moment anything drives it. ERC flags the
+        # hard tie as a Bidirectional-to-Power-output conflict, which is
+        # a fair description of the hazard.
+        "1B2": "U8_1B2_TIE", "1A2": None,
+        "2A1": "U8_2A1_TIE", "2B1": None,
+        "2A2": "U8_2A2_TIE", "2B2": None,
+    })
+    for ref, net in (("R33", "U8_1B2_TIE"), ("R34", "U8_2A1_TIE"),
+                     ("R35", "U8_2A2_TIE"), ("R36", "U9_ADR1_TIE")):
+        flow(r, ref, "10k tie-off", {"1": net, "2": "GND"})
+    flow(c, "C24", "100n U7A", {"1": "+1V8", "2": "GND"})
+    flow(c, "C25", "100n U7B", {"1": "+3V3", "2": "GND"})
+    flow(c, "C26", "100n U8A", {"1": "+1V8", "2": "GND"})
+    flow(c, "C27", "100n U8B", {"1": "+3V3", "2": "GND"})
+
+    # --- I2C domain crossing: two-FET open-drain translator -------------
+    for ref, lo, hi in (("Q3", "I2C1_SDA_1V8", "CODEC_SDA_3V3"),
+                        ("Q4", "I2C1_SCL_1V8", "CODEC_SCL_3V3")):
+        flow(nfet, ref, "NFET i2c xlat", {"G": "+1V8", "S": lo, "D": hi})
+    for ref, net, rail_net in (("R25", "I2C1_SDA_1V8", "+1V8"),
+                               ("R26", "I2C1_SCL_1V8", "+1V8"),
+                               ("R27", "CODEC_SDA_3V3", "+3V3"),
+                               ("R28", "CODEC_SCL_3V3", "+3V3")):
+        flow(r, ref, "2k2 pullup", {"1": net, "2": rail_net})
+
+    # --- codec ----------------------------------------------------------
+    cod = {
+        "VCCAD1": "+5V", "VCCAD2": "+5V", "VCCDA1": "+5V", "VCCDA2": "+5V",
+        "VDD1": "+3V3", "VDD2": "+3V3",
+        "AGNDAD1": "GND", "AGNDAD2": "GND", "AGNDDA1": "GND",
+        "AGNDDA2": "GND", "DGND1": "GND", "DGND2": "GND",
+        "VCOMAD": "VCOMAD", "VCOMDA": "VCOMDA",
+        "VREFAD1": "VREFAD1", "VREFAD2": "GND",
+        "RST": "CODEC_RST", "MODE": "GND",
+        # ADR0 is input-only so it may strap directly; ADR1 doubles as
+        # SPI MDO and is bidirectional, so it gets a resistor.
+        "ADR0": "GND", "ADR1": "U9_ADR1_TIE",
+        "SCL": "CODEC_SCL_3V3", "SDA": "CODEC_SDA_3V3",
+        "SCKI": "I2S_SCKI_3V3",
+        "BCKDA": "I2S_BCK_3V3", "LRCKDA": "I2S_LRCK_3V3",
+        "BCKAD": "I2S_BCK_3V3", "LRCKAD": "I2S_LRCK_3V3",
+        "DIN1": "I2S_DIN_3V3", "DIN2": None, "DIN3": None, "DIN4": None,
+        "DOUT1": "CODEC_DOUT_3V3", "DOUT2": None, "DOUT3": None,
+        "OVF": None, "ZERO": None,
+        "VIN1P": "MIC_IN_P", "VIN1N": "MIC_IN_N",
+    }
+    for ch in range(2, 7):
+        cod[f"VIN{ch}P"] = None
+        cod[f"VIN{ch}N"] = None
+    for ch, nm in ((1, "FL"), (2, "FR"), (3, "RL"), (4, "RR"), (5, "SUB")):
+        cod[f"VOUT{ch}P"] = f"AOUT_{nm}_P"
+        cod[f"VOUT{ch}N"] = f"AOUT_{nm}_N"
+    for ch in (6, 7, 8):
+        cod[f"VOUT{ch}P"] = None
+        cod[f"VOUT{ch}N"] = None
+    flow(u_cod, "U9", "PCM3168A-Q1", cod)
+
+    for ref, net in (("C28", "VCOMAD"), ("C29", "VCOMDA"), ("C30", "VREFAD1")):
+        flow(c, ref, "10u decouple", {"1": net, "2": "GND"})
+    for ref, rail_net in (("C31", "+5V"), ("C32", "+5V"),
+                          ("C33", "+3V3"), ("C34", "+3V3")):
+        flow(c, ref, "100n codec", {"1": rail_net, "2": "GND"})
+    # Power-on reset by RC rather than a module GPIO: keeps a scarce 1.8 V
+    # GPIO free and needs no third translator channel.
+    flow(r, "R29", "100k RST", {"1": "+3V3", "2": "CODEC_RST"})
+    flow(c, "C35", "100n RST", {"1": "CODEC_RST", "2": "GND"})
+
+    # --- pre-outs and microphone ----------------------------------------
+    pre = {}
+    for nm in ("FL", "FR", "RL", "RR", "SUB"):
+        pre[nm + "_P"] = f"AOUT_{nm}_P"
+        pre[nm + "_N"] = f"AOUT_{nm}_N"
+    pre["GND"] = "GND"
+    flow(conn_pre, "J5", "Pre-outs to amp", pre)
+
+    flow(conn_mic, "J6", "Mic", {"MIC_P": "MIC_BIAS_P", "MIC_N": "MIC_IN_N",
+                                 "GND": "GND"})
+    # Electret bias, then AC-couple into the ADC and centre both inputs on
+    # the codec's own common-mode reference.
+    flow(r, "R30", "2k2 mic bias", {"1": "+5V", "2": "MIC_BIAS_P"})
+    flow(c, "C36", "1u couple", {"1": "MIC_BIAS_P", "2": "MIC_IN_P"})
+    flow(r, "R31", "10k bias", {"1": "VCOMAD", "2": "MIC_IN_P"})
+    flow(r, "R32", "10k bias", {"1": "VCOMAD", "2": "MIC_IN_N"})
+
+
 def main():
     x1_lib = build_x1_symbol()
     gnd_lib = rail("GND")
@@ -769,9 +957,15 @@ def main():
                                                 uuid=U()))
                 n_nc += 1
 
-    build_power_tree(610.0, 55.0)
-    build_1v8_and_can(320.0, 392.0, 150.0)
-    build_bridge(60.0, 392.0, 150.0)
+    build_common_symbols()
+
+    # Each block gets its own band. The x origins are spaced so that no
+    # block's rightmost labels can reach the next block's leftmost stubs;
+    # the net-collision check below is what proves it.
+    build_bridge(60.0, 430.0, 370.0)
+    build_1v8_and_can(300.0, 430.0, 370.0)
+    build_audio(560.0, 430.0, 370.0)
+    build_power_tree(880.0, 60.0, 700.0)
 
     # Neither rail has a regulator on the sheet yet, so nothing drives
     # them and ERC's power_pin_not_driven fires. Assert they come from
@@ -787,6 +981,33 @@ def main():
     if driven_nets:
         print(f"  rails with a real driver (no flag): "
               f"{', '.join(sorted(driven_nets))}")
+
+    # Net-collision check. Sections are laid out independently, so two
+    # of them can drift into the same region and land a stub endpoint of
+    # one net exactly on top of another's. That silently MERGES the two
+    # nets - electrically catastrophic and invisible on a casual look at
+    # the drawing. ERC does report it (multiple_net_names) but only after
+    # the fact and only for the pair it happens to notice; this checks
+    # every terminated point directly.
+    at = {}
+    for lab in sch.labels:
+        at.setdefault((lab.position.X, lab.position.Y), set()).add(
+            (lab.text, "label"))
+    for sym in sch.schematicSymbols:
+        # PWR_FLAGs are placed coincident with their own net ON PURPOSE,
+        # so they are not collisions - skip them.
+        if sym.entryName.startswith("PWR_FLAG_"):
+            continue
+        if sym.entryName.startswith("PWR_"):
+            ref = sym.properties[0].value if sym.properties else "?"
+            at.setdefault((sym.position.X, sym.position.Y), set()).add(
+                (sym.entryName[4:], ref))
+    clashes = {p: n for p, n in at.items()
+               if len({net for net, _ in n}) > 1}
+    if clashes:
+        print(f"  ERROR: {len(clashes)} coordinate(s) carry more than one net:")
+        for pos, names in list(clashes.items())[:8]:
+            print(f"    {pos}: {sorted(names)}")
 
     # Sheet extent sanity check - this project's KiCad notes record content
     # silently running off a fixed-size sheet with no warning in the editor.

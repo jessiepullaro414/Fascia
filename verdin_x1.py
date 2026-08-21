@@ -44,7 +44,10 @@ _RULES = [
     # Note the two naming styles: the Verdin-standard names are USB_2_SS*,
     # while USB1_TX1_*/USB1_RX1_* are module-specific-pin functions.
     ("E", r"^(USB_2_SS|USB1_(TX|RX))"),
-    ("D", r"^(CAN_[12]_|I2C_1_|USB_)"),
+    # I2S_1 carries the audio link to the PCM3168A-Q1 codec, so it
+    # belongs with the interfaces this board uses rather than in the
+    # unused bank. I2S_2 stays unused.
+    ("D", r"^(CAN_[12]_|I2C_1_|USB_|I2S_1_)"),
     # Everything else is unused by this board.
     ("E", r".*"),
 ]
@@ -151,6 +154,10 @@ def verify():
     # The USB split is deliberate and easy to get wrong, so assert it:
     # the USB 2.0 data pair must be usable, SuperSpeed must not be.
     names_d = {name for _, name in b["D"]}
+    for needed in ("I2S_1_BCLK", "I2S_1_SYNC", "I2S_1_D_OUT", "I2S_1_D_IN",
+                   "I2S_1_MCLK"):
+        if needed not in names_d:
+            problems.append(f"{needed} should be in the comms bank, is not")
     names_e = {name for _, name in b["E"]}
     for needed in ("USB_2_D_N", "USB_2_D_P"):
         if needed not in names_d:
