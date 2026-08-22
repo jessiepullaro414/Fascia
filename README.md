@@ -26,18 +26,33 @@ module's `WB` variant.
 
 **PCB started — parts placed and netted, nothing routed yet.**
 `build_pcb.py` generates `Fascia.kicad_pcb`: 118 footprints, 574 pads
-netted across 129 nets, six layers, on a 148 × 164 mm board.
-`run_drc.py` reports **schematic parity 0** — the board and the schematic
-describe the same circuit — with 414 unconnected items (expected until
-routing) and 12 `lib_footprint_mismatch` findings that are a KiCad
-tooling artifact, explained in that script.
+netted across 129 nets, six layers, on a **179 × 92 mm** board.
+`run_drc.py` reports **schematic parity 0** and **zero real violations** —
+only 414 unconnected items (expected until routing) and 12
+`lib_footprint_mismatch` findings that are a KiCad tooling artifact.
 
-Placement is currently **mechanical, not functional**: parts are packed
-into rows by height. That is enough to route against, but a real layout
-wants functional grouping — the bridge beside the panel connector so the
-DSI run stays short, the power tree near the input, the codec away from
-the switching regulator. That is the next improvement, alongside
-`route_board.py`.
+Two things shape the layout:
+
+- **The Verdin socket is rotated 90°.** Its footprint is 36 × 79 mm, tall
+  and narrow, which forced a tall board and wasted the space beside it.
+  Turned on its side it is 79 × 36 mm, the board becomes landscape, and
+  the height drops from 164 mm to 92 mm.
+- **Parts are grouped by connectivity, not by size.** Each decoupling
+  cap, divider and gate resistor is assigned to whichever IC or connector
+  it shares the most *non-rail* nets with, so every group is a real
+  functional block. Rails are excluded from that count deliberately —
+  GND touches everything and would make every part look equally related
+  to everything else. The grouping is derived from the netlist, so it
+  cannot go stale when the schematic changes.
+
+Groups are then placed with a skyline packer seeded with the socket as an
+occupied region, rather than shelf-packed. Shelf packing wastes whatever
+vertical space the tallest block in each row does not use, which on
+blocks this unequal is most of it.
+
+Still to improve: group-to-group adjacency is not optimised, so a few
+related blocks end up apart — the codec sits away from its own level
+shifters. Routing will care about that more than DRC does.
 
 **Schematic complete — every block wired except the backlight.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
