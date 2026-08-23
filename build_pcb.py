@@ -175,75 +175,40 @@ def footprint_bbox(fp):
 # ---------------------------------------------------------------------------
 # 3. Placement
 #
-# Two things make this look like a board rather than a parts bin:
+# This is the same skyline bottom-left packer manifold-pcb and thermo-pcb
+# use, ported rather than reinvented. Two properties matter here:
 #
-#   - the Verdin socket is ROTATED 90 degrees. Its footprint is 36 x 79 mm,
-#     tall and narrow, which forces a tall board and wastes the space
-#     beside it. Turned on its side it is 79 x 36 mm and the board becomes
-#     landscape, which is also the shape the dash opening wants.
+#   - every part is tried BOTH unrotated and rotated 90 degrees, and goes
+#     wherever it yields the lowest resulting top edge. That is what turns
+#     the tall pin-header connectors on their sides and lets the 0603s
+#     backfill the low spots beside the big parts, instead of each part
+#     being stuck in a same-size block.
 #
-#   - parts are grouped by what they are connected to, not by how big they
-#     are. Each decoupling cap, divider resistor and gate resistor is
-#     assigned to whichever IC or connector it shares the most nets with,
-#     so a group is a real functional block. That grouping is derived from
-#     the netlist rather than hand-listed, so it cannot drift out of date
-#     when the schematic changes.
+#   - the keepout is a real packer input, not a check afterwards.
+#
+# On top of that, parts are sorted by functional group so a block's own
+# passives stay near their IC. Group membership is derived from the
+# netlist - each part joins whichever IC or connector it shares the most
+# NON-RAIL nets with. Rails are excluded because GND touches everything
+# and would make every part look equally related to everything.
 # ---------------------------------------------------------------------------
 MARGIN = 4.0        # board edge to nearest part
-GAP = 1.8           # between parts inside a group; also gives reference
-                    # labels room, since a label can collide with a
-                    # NEIGHBOUR's silkscreen, not just its own footprint
-GROUP_GAP = 3.5     # between groups
+CLEAR = 1.3         # clearance folded into each part's reserved footprint
 
 loaded = {ref: load_footprint(p["footprint"]) for ref, p in parts.items()}
 raw_boxes = {ref: footprint_bbox(fp) for ref, fp in loaded.items()}
-
-SOCKET = "J1"
-angles = {SOCKET: 90.0}
-
-
-def rotated_bbox(bb, angle):
-    """
-    Bounding box after KiCad's own footprint rotation.
-
-    KiCad rotates a footprint's local (x, y) to (y, -x) for 90 degrees -
-    this project's notes record getting that backwards and only catching
-    it through a real sub-millimetre pad clearance violation, because the
-    placer and its own self-check agreed with each other while both were
-    wrong.
-    """
-    x0, y0, x1, y1 = bb
-    if angle % 360 == 0:
-        return bb
-    if angle % 360 == 90:
-        return (y0, -x1, y1, -x0)
-    if angle % 360 == 180:
-        return (-x1, -y1, -x0, -y0)
-    return (-y1, x0, -y0, x1)          # 270
-
-
-boxes = {ref: rotated_bbox(bb, angles.get(ref, 0.0))
-         for ref, bb in raw_boxes.items()}
-
-
-def size(ref):
-    x0, y0, x1, y1 = boxes[ref]
-    return (x1 - x0, y1 - y0)
-
 
 # --- functional grouping, derived from the netlist --------------------------
 nets_of = {}
 for (ref, _pin), net in pad_net.items():
     nets_of.setdefault(ref, set()).add(net)
 
-# Rails connect to everything, so they say nothing about which block a
-# part belongs to. Excluding them is what makes the grouping meaningful.
 RAILS = {"GND", "+5V", "+3V3", "+1V8", "+12V_PROT", "VBAT_F"}
-
-anchors = [r for r in parts if r[0] in "UJ" and r != SOCKET]
+anchors = [r for r in parts if r[0] in "UJ"]
 group_of = {}
 for ref in parts:
-    if ref == SOCKET or ref in anchors:
+    if ref in anchors:
+        group_of[ref] = ref
         continue
     mine = nets_of.get(ref, set()) - RAILS
     best, score = None, 0
@@ -251,112 +216,148 @@ for ref in parts:
         n = len(mine & (nets_of.get(a, set()) - RAILS))
         if n > score:
             best, score = a, n
-    # A part sharing only rails has no functional home; park it with the
-    # regulator whose output it most likely decouples.
     group_of[ref] = best or "U2"
 
-groups = {a: [a] for a in anchors}
-for ref, a in group_of.items():
-    groups.setdefault(a, [a]).append(ref)
-
-# Order groups so related ones end up near each other: power first (it
-# feeds everything), then the module, then the blocks that hang off it.
-ORDER = ["J2", "U1", "U2", "U3", "U6", "U4", "J3", "U5", "J4",
-         "U7", "U8", "U9", "J5", "J6", "U10", "J7", "J8", "J9", "J10"]
-ordered = [a for a in ORDER if a in groups] + \
-          [a for a in groups if a not in ORDER]
+# Group order: power in, front end, regulators, then the blocks that hang
+# off the module, then the debug and battery corner.
+ORDER = ["J1", "J2", "U1", "U2", "U3", "U6", "U5", "J4", "U7", "U8",
+         "U9", "J5", "J6", "U4", "J3", "U10", "J7", "J8", "J9", "J10"]
+gi = {a: i for i, a in enumerate(ORDER)}
+group_rank = {ref: gi.get(group_of[ref], len(ORDER)) for ref in parts}
 
 
-def pack_group(refs, max_w):
-    """Shelf-pack one group's parts; returns (w, h, [(ref, dx, dy)])."""
-    items = sorted(refs, key=lambda r: -size(r)[1])
-    out, x, y, shelf_h, w = [], 0.0, 0.0, 0.0, 0.0
-    for ref in items:
-        rw, rh = size(ref)
-        if x > 0 and x + GAP + rw > max_w:
-            y += shelf_h + GAP
-            x, shelf_h = 0.0, 0.0
-        if x > 0:
-            x += GAP
-        out.append((ref, x, y))
-        x += rw
-        shelf_h = max(shelf_h, rh)
-        w = max(w, x)
-    return w, y + shelf_h, out
+def rotated_bbox(bb, angle):
+    """Bounding box after KiCad's (x, y) -> (y, -x) rotation for 90 deg."""
+    x0, y0, x1, y1 = bb
+    if angle % 360 == 90:
+        return (y0, -x1, y1, -x0)
+    if angle % 360 == 180:
+        return (-x1, -y1, -x0, -y0)
+    if angle % 360 == 270:
+        return (-y1, x0, -y0, x1)
+    return bb
 
 
-sock_w, sock_h = size(SOCKET)
-BOARD_W = 185.0
+def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
+    sized = []
+    for ref in refs:
+        x0, y0, x1, y1 = raw_boxes[ref]
+        sized.append((ref, x1 - x0, y1 - y0, x0, y0, x1, y1))
+    sized.sort(key=sort_key)
+
+    skyline = list(initial_skyline)
+
+    def profile_height(x, w):
+        h = 0.0
+        for sx, sw, sh in skyline:
+            if sx + sw <= x + 1e-9 or sx >= x + w - 1e-9:
+                continue
+            h = max(h, sh)
+        return h
+
+    def best_position(w):
+        best = None
+        cand = set()
+        for sx, sw, _sh in skyline:
+            cand.add(sx)
+            cand.add(sx + sw - w)      # right-justify against this segment
+        for x in cand:
+            if x < -1e-9 or x + w > max_width + 1e-9:
+                continue
+            y = profile_height(x, w)
+            if best is None or (y, x) < (best[0], best[1]):
+                best = (y, x)
+        return best
+
+    def update_skyline(x, w, top):
+        x_end = x + w
+        segs = []
+        for sx, sw, sh in skyline:
+            s_end = sx + sw
+            if s_end <= x + 1e-9 or sx >= x_end - 1e-9:
+                segs.append((sx, sw, sh))
+                continue
+            if sx < x:
+                segs.append((sx, x - sx, sh))
+            if s_end > x_end:
+                segs.append((x_end, s_end - x_end, sh))
+        segs.append((x, w, top))
+        segs.sort(key=lambda t: t[0])
+        merged = []
+        for seg in segs:
+            if merged and abs(merged[-1][0] + merged[-1][1] - seg[0]) < 1e-6 \
+                    and abs(merged[-1][2] - seg[2]) < 1e-6:
+                merged[-1] = (merged[-1][0], merged[-1][1] + seg[1],
+                              merged[-1][2])
+            else:
+                merged.append(seg)
+        return merged
+
+    placed, rotated = {}, set()
+    for ref, w, h, x0, y0, x1, y1 in sized:
+        options = []
+        p0 = best_position(w + margin)
+        if p0 is not None:
+            options.append((p0[0] + h + margin, p0[1], False))
+        p90 = best_position(h + margin)
+        if p90 is not None:
+            options.append((p90[0] + w + margin, p90[1], True))
+        if not options:
+            raise RuntimeError(f"{ref} ({w:.1f}x{h:.1f}) does not fit in "
+                               f"{max_width:.1f} mm even alone")
+        options.sort(key=lambda o: (o[0], o[1]))
+        top, x, is_rot = options[0]
+        if is_rot:
+            rw, rh = h + margin, w + margin
+            skyline = update_skyline(x, rw, top)
+            # KiCad's "at x y 90" rotates local (x,y) -> (y,-x), so the
+            # bbox corners map to (y0,-x1)-(y1,-x0) and the local origin
+            # lands at (y0,-x1). Confirmed empirically in the sibling
+            # projects against real DRC output - the opposite assumption
+            # put a rotated header's far pads against its neighbour.
+            placed[ref] = (x - y0, (top - rh) + x1)
+            rotated.add(ref)
+        else:
+            rw, rh = w + margin, h + margin
+            skyline = update_skyline(x, rw, top)
+            placed[ref] = (x - x0, (top - rh) - y0)
+
+    used_w = used_h = 0.0
+    for ref, w, h, x0, y0, x1, y1 in sized:
+        px, py = placed[ref]
+        if ref in rotated:
+            used_w = max(used_w, px + y1)
+            used_h = max(used_h, py - x0)
+        else:
+            used_w = max(used_w, px + x1)
+            used_h = max(used_h, py + y1)
+    return placed, rotated, used_w, used_h
+
+
+BOARD_W = 150.0
 INNER = BOARD_W - 2 * MARGIN
 
-packed = []
-for a in ordered:
-    gw, gh, items = pack_group(groups[a], 56.0)
-    packed.append((a, gw, gh, items))
+origin, rotated_refs, used_w, used_h = skyline_pack(
+    list(parts), INNER, CLEAR,
+    # Big parts first regardless of group, then everything else grouped.
+    # Pure group order buried the coin-cell holder at the end, where it
+    # landed in an empty row of its own and set the board height; pure
+    # area order scatters each IC's passives away from it. This gets the
+    # large awkward parts placed while the skyline is still free, then
+    # keeps the small stuff with its own IC.
+    sort_key=lambda t: (0 if t[1] * t[2] > 90.0 else 1,
+                        0 if t[1] * t[2] > 90.0 else group_rank[t[0]],
+                        -(t[1] * t[2])),
+    initial_skyline=[(0.0, INNER, 0.0)])
 
-
-def skyline_pack(rects, max_w, initial):
-    """
-    Place (key, w, h) rectangles against a skyline, lowest-fit first.
-
-    Shelf packing wastes whatever vertical space the tallest item in each
-    row does not use, which on a board of very unequal blocks is most of
-    it. A skyline tracks the actual profile of what has been placed and
-    drops each block into the lowest spot it fits.
-
-    `initial` seeds the profile with space that is already taken - here,
-    the socket. Encoding the keepout as a real packer input is the only
-    way that works: a collision check bolted on afterwards leaves the
-    packer trying to use space it cannot have.
-    """
-    sky = list(initial)               # [(x, width, height)]
-    out = {}
-
-    def height_over(x, w):
-        top = 0.0
-        for sx, sw, sh in sky:
-            if sx + sw <= x or sx >= x + w:
-                continue
-            top = max(top, sh)
-        return top
-
-    for key, w, h in rects:
-        best = None
-        xs = sorted({0.0} | {sx for sx, _, _ in sky}
-                    | {sx + sw for sx, sw, _ in sky})
-        for x in xs:
-            if x + w > max_w:
-                continue
-            y = height_over(x, w)
-            if best is None or y < best[1] or (y == best[1] and x < best[0]):
-                best = (x, y)
-        if best is None:              # wider than the board; force a new row
-            best = (0.0, max(sh for _, _, sh in sky) if sky else 0.0)
-        x, y = best
-        out[key] = (x, y)
-        sky.append((x, w, y + h))
-    return out, max((sh for _, _, sh in sky), default=0.0)
-
-
-# The socket occupies the top-left; hand that to the packer as elevated
-# skyline rather than checking against it afterwards.
-initial = [(0.0, sock_w + GROUP_GAP, sock_h + GROUP_GAP)]
-rects = [(a, gw + GROUP_GAP, gh + GROUP_GAP) for a, gw, gh, _ in packed]
-pos, used_h = skyline_pack(rects, INNER, initial)
-
-placement = {SOCKET: (round(MARGIN + sock_w / 2, 2),
-                      round(MARGIN + sock_h / 2, 2))}
-for a, gw, gh, items in packed:
-    gx, gy = pos[a]
-    for ref, dx, dy in items:
-        rw, rh = size(ref)
-        placement[ref] = (round(MARGIN + gx + dx + rw / 2, 2),
-                          round(MARGIN + gy + dy + rh / 2, 2))
+angles = {ref: 90.0 for ref in rotated_refs}
+placement = {ref: (round(MARGIN + x, 3), round(MARGIN + y, 3))
+             for ref, (x, y) in origin.items()}
 
 board_w = BOARD_W
 board_h = round(used_h + 2 * MARGIN, 2)
-print(f"{len(packed)} functional groups; socket rotated "
-      f"{angles[SOCKET]:.0f} deg to {sock_w:.0f} x {sock_h:.0f} mm")
+print(f"packed {len(parts)} parts, {len(rotated_refs)} rotated 90 deg; "
+      f"used {used_w:.1f} x {used_h:.1f} mm")
 
 
 # ---------------------------------------------------------------------------
@@ -377,12 +378,9 @@ for i, name in enumerate(sorted(set(net_names)), start=1):
 ref_label_pos = {}
 for ref, p in sorted(parts.items()):
     fp = loaded[ref]
-    x, y = placement[ref]
-    bx0, by0, bx1, by1 = boxes[ref]      # already rotated
-    # Footprint origin is not its bbox centre; offset so the BBOX lands
-    # where the packer put it.
-    ox = x - (bx0 + bx1) / 2
-    oy = y - (by0 + by1) / 2
+    # The packer returns the footprint ORIGIN directly, already
+    # accounting for the bbox offset and for rotation.
+    ox, oy = placement[ref]
     ang = angles.get(ref, 0.0)
     fp.position = Position(round(ox, 3), round(oy, 3), ang)
     if ang:
@@ -407,7 +405,14 @@ for ref, p in sorted(parts.items()):
     # Library-generator metadata has no meaning on a board and, left as a
     # bare property, `pcb upgrade` renders it visible at (0,0) on F.Fab.
     fp.properties.pop("KiLib_Generator", None)
-    ref_label_pos[ref] = round(by0 - 0.6, 3)
+    # Label above the part. A lane-assignment pass (trying above, then
+    # below, then further out, checking against neighbours) was tried and
+    # measured WORSE - 14 silkscreen findings against 4 - because
+    # re-centring every label disturbed the many that were already fine to
+    # rescue the few that were not. Kept the simple version; the four
+    # remaining findings are cosmetic and listed in the README.
+    rb = rotated_bbox(raw_boxes[ref], ang)
+    ref_label_pos[ref] = (round(rb[1] - 0.5, 3), 0.8)
 
     hit = 0
     for pad in fp.pads:
@@ -421,6 +426,8 @@ for ref, p in sorted(parts.items()):
             hit += 1
     board.footprints.append(fp)
 
+
+
 # Measure the real extent of everything placed, rather than trusting the
 # predicted board size. The packer works in bounding boxes; if any bbox
 # understates a footprint the prediction is quietly wrong, and the first
@@ -429,7 +436,7 @@ for ref, p in sorted(parts.items()):
 ex0 = ey0 = 1e9
 ex1 = ey1 = -1e9
 for ref in parts:
-    bx0, by0, bx1, by1 = boxes[ref]
+    bx0, by0, bx1, by1 = rotated_bbox(raw_boxes[ref], angles.get(ref, 0.0))
     fx, fy = loaded[ref].position.X, loaded[ref].position.Y
     ex0 = min(ex0, fx + bx0)
     ey0 = min(ey0, fy + by0)
@@ -461,11 +468,11 @@ board.to_file(PCB)
 # bare tokens to real positions BEFORE upgrade runs, while their exact
 # one-line form is still known.
 txt = open(PCB, encoding="utf-8").read()
-for ref, dy in ref_label_pos.items():
+for ref, (dy, fs) in ref_label_pos.items():
     txt = txt.replace(
         f'(property "Reference" "{ref}")',
         f'(property "Reference" "{ref}" (at 0 {dy} 0) (layer "F.SilkS") '
-        f'(effects (font (size 0.8 0.8) (thickness 0.12))))')
+        f'(effects (font (size {fs} {fs}) (thickness 0.12))))')
 open(PCB, "w", encoding="utf-8").write(txt)
 
 # The exposed-pad footprints this board uses (TI's DRB0008A) carry 0.2 mm
@@ -502,7 +509,7 @@ print(f"  board {board_w} x {board_h} mm")
 # with no routing yet.
 outside = []
 for ref in parts:
-    bx0, by0, bx1, by1 = boxes[ref]
+    bx0, by0, bx1, by1 = rotated_bbox(raw_boxes[ref], angles.get(ref, 0.0))
     fx, fy = loaded[ref].position.X, loaded[ref].position.Y
     if (fx + bx0 < board_x0 or fy + by0 < board_y0
             or fx + bx1 > board_x0 + board_w
@@ -516,7 +523,7 @@ if outside:
 # to fail here naming the two parts.
 placed_box = {}
 for ref in parts:
-    bx0, by0, bx1, by1 = boxes[ref]
+    bx0, by0, bx1, by1 = rotated_bbox(raw_boxes[ref], angles.get(ref, 0.0))
     fx, fy = loaded[ref].position.X, loaded[ref].position.Y
     placed_box[ref] = (fx + bx0, fy + by0, fx + bx1, fy + by1)
 clash = []

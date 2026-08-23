@@ -26,33 +26,35 @@ module's `WB` variant.
 
 **PCB started — parts placed and netted, nothing routed yet.**
 `build_pcb.py` generates `Fascia.kicad_pcb`: 118 footprints, 574 pads
-netted across 129 nets, six layers, on a **179 × 92 mm** board.
-`run_drc.py` reports **schematic parity 0** and **zero real violations** —
-only 414 unconnected items (expected until routing) and 12
-`lib_footprint_mismatch` findings that are a KiCad tooling artifact.
+netted across 129 nets, six layers, on a **148 × 64 mm** board.
+`run_drc.py` reports **schematic parity 0**, 414 unconnected items
+(expected until routing), 12 `lib_footprint_mismatch` findings that are a
+KiCad tooling artifact, and 3 cosmetic silkscreen clearances.
 
-Two things shape the layout:
+Placement uses the **same skyline bottom-left packer as `manifold-pcb`
+and `thermo-pcb`**, ported rather than reinvented. Two properties do the
+work:
 
-- **The Verdin socket is rotated 90°.** Its footprint is 36 × 79 mm, tall
-  and narrow, which forced a tall board and wasted the space beside it.
-  Turned on its side it is 79 × 36 mm, the board becomes landscape, and
-  the height drops from 164 mm to 92 mm.
-- **Parts are grouped by connectivity, not by size.** Each decoupling
-  cap, divider and gate resistor is assigned to whichever IC or connector
-  it shares the most *non-rail* nets with, so every group is a real
-  functional block. Rails are excluded from that count deliberately —
-  GND touches everything and would make every part look equally related
-  to everything else. The grouping is derived from the netlist, so it
-  cannot go stale when the schematic changes.
+- **Every part is tried both unrotated and rotated 90°**, and goes
+  wherever it yields the lowest resulting top edge. That is what turns
+  the tall pin-header connectors on their sides and lets the 0603s
+  backfill the low spots beside the big parts.
+- **Keepouts are real packer inputs**, not checks applied afterwards.
 
-Groups are then placed with a skyline packer seeded with the socket as an
-occupied region, rather than shelf-packed. Shelf packing wastes whatever
-vertical space the tallest block in each row does not use, which on
-blocks this unequal is most of it.
+Parts are sorted so the large awkward parts are placed first while the
+skyline is still free, and everything else follows in functional-group
+order so each IC keeps its own passives nearby. Group membership is
+derived from the netlist — each part joins whichever IC or connector it
+shares the most **non-rail** nets with. Rails are excluded deliberately:
+GND touches everything and would make every part look equally related to
+everything else.
 
-Still to improve: group-to-group adjacency is not optimised, so a few
-related blocks end up apart — the codec sits away from its own level
-shifters. Routing will care about that more than DRC does.
+The Verdin socket is rotated 90° as part of that. Its footprint is
+36 × 79 mm, tall and narrow; on its side it is 79 × 36 mm and the board
+becomes landscape, which is also the shape a dash opening wants.
+
+Together those took the board from 148 × 164 mm to **148 × 64 mm** — a
+61% area reduction — with 16 parts rotated.
 
 **Schematic complete — every block wired except the backlight.**
 `build_schematic.py` generates a real, KiCad-loadable schematic
