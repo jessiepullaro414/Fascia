@@ -460,6 +460,20 @@ for a, b in zip(outline, outline[1:]):
         start=Position(a[0], a[1]), end=Position(b[0], b[1]),
         layer="Edge.Cuts", width=0.1, tstamp=U()))
 
+# Power trunks that route_board.py widens after routing. Everything routes
+# at the Default class's 0.2 mm because that is what fits between the 0.5 mm
+# pads of the SODIMM socket and the VQFN parts; the neck-down pass then
+# fattens each trunk wherever there is room. The ladder is sized toward the
+# 5 A the input protection is built for (IPC-2221, 1 oz external, 10 C rise):
+#   1.50mm -> ~4.35A   1.20mm -> ~3.71A   1.00mm -> ~3.25A  0.80mm -> ~2.76A
+#   0.60mm -> ~2.24A   0.50mm -> ~1.96A   0.40mm -> ~1.67A  0.30mm -> ~1.33A
+# Listing an ambitious top rung costs nothing where it does not fit - the
+# pass just falls back a rung.
+TRUNK_WIDTH_LADDER = [1.5, 1.2, 1.0, 0.8, 0.6, 0.5, 0.4, 0.3]
+TRUNK_NETS = ["VBAT_IN", "VBAT_F", "+12V_PROT", "+5V", "USB_VBUS"]
+for _n in TRUNK_NETS:
+    assert _n in net_num, f"{_n} is not a net on this board"
+
 board.to_file(PCB)
 
 # `pcb upgrade` fills in any property KiCad's writer left bare using its
