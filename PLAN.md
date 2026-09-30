@@ -33,14 +33,30 @@ A* search through the real copper and then lets DRC judge.
 - [x] Placement fixed so routing is tractable: bridge and socket placed
       together, passives pulled next to their IC, spacing 1.3 to 2.0 mm
       (22 unrouted at 12 passes became 4)
-- [~] `finish_routes.py` written; first grid (0.1 mm) could not reach the
-      fine-pitch pads, second grid (0.05 mm) was still running when this was
-      written
+- [~] `finish_routes.py` written and working, but it does not close the gap
+      yet. Findings:
+  - All three open pads are **sealed in**: fine-pitch QFP pads whose
+    neighbours' fan-out tracks leave a one-cell corridor that ends at a
+    wall (`U9.28` can reach only its own 1.55 mm length). That is why
+    FreeRouting stalled on exactly these.
+  - With rip-up enabled the script does route all three (41, 31 and 43 mm
+    of track), but ripping up what walled them in opens 17 other
+    connections, and the next round re-routing those rips up more:
+    20 open after round 1, 20 open after round 3, plus 25-45 real
+    clearance violations from the 0.05 mm grid. Net result is worse than
+    the 3-open board, so the script **restores the original board when DRC
+    says it is not better**. Checked: it does.
+  - Next idea if this is pursued: negotiated (soft-obstacle) routing, where
+    the search may cross other nets' tracks at a cost and only the copper
+    the path actually crosses is ripped, instead of everything within
+    0.75 mm of the pocket. Pads stay hard obstacles.
 - [ ] DRC-verified result: 0 unconnected items, no new clearance violations
 
 Acceptance: `python run_drc.py` reports schematic parity 0, 0 unconnected
-items, and nothing outside the two expected categories. If the finisher
-cannot do it, the fallback is hand-routing the three in KiCad.
+items, and nothing outside the two expected categories. The fallback is
+hand-routing the three in KiCad, which is now the recommended path: the
+three pads are sealed in by neighbouring fan-out, and moving a few of
+those tracks by hand is quicker than teaching the script to do it.
 
 ## 3. Signal integrity before this is a real board
 
