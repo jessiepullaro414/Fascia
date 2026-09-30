@@ -873,7 +873,8 @@ separate LVDS table on page 42.
 
 ## Known open items
 
-- No schematic, PCB, footprints or BOM yet.
+- No BOM or fab outputs yet. See [PLAN.md](PLAN.md) for the full list of
+  what is left and what each step is blocked on.
 - **Panel selected but its datasheet is not yet in hand.** The
   **iFan IF101GRL192-120B** is chosen; a request for datasheet and
   pricing went to the vendor on 2026-08-16. Until it arrives, anything
