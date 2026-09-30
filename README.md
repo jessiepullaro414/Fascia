@@ -24,37 +24,55 @@ module's `WB` variant.
 
 ## Status
 
-**PCB started — parts placed and netted, nothing routed yet.**
+**PCB placed and routed to within 3 connections.**
 `build_pcb.py` generates `Fascia.kicad_pcb`: 118 footprints, 574 pads
-netted across 129 nets, six layers, on a **148 × 64 mm** board.
-`run_drc.py` reports **schematic parity 0**, 414 unconnected items
-(expected until routing), 12 `lib_footprint_mismatch` findings that are a
-KiCad tooling artifact, and 3 cosmetic silkscreen clearances.
+netted across 129 nets, six layers, on a **148 x 71 mm** board.
+`route_board.py` (ported from the sibling boards) routes it with
+FreeRouting, widens the power trunks, pours GND on In1 and In4, and then
+asks `kicad-cli` DRC how many connections are really open. After a
+150-pass run **3 connections are still unrouted**: `AOUT_RL_N` (codec to
+the audio connector), `U9_ADR1_TIE`, and `LVDS_A_Y0N` (bridge to panel
+connector). FreeRouting oscillated between 3 and 4 for the last 100
+passes, so more passes of the same run will not close them; they need a
+second stochastic attempt or hand-routing. `run_drc.py` reports
+**schematic parity 0**, 12 `lib_footprint_mismatch` findings that are a
+KiCad tooling artifact, and one silkscreen-over-mask finding.
+
+Nothing about the differential pairs is tuned: FreeRouting does not
+length-match, so the DSI and dual-link LVDS pairs are ordinary routed
+nets with no impedance control. `route_board.py` prints the resulting
+intra-pair skew so it is a number, not a guess.
 
 Placement uses the **same skyline bottom-left packer as `manifold-pcb`
-and `thermo-pcb`**, ported rather than reinvented. Two properties do the
-work:
+and `thermo-pcb`**, ported rather than reinvented, with three additions
+this board needed:
 
-- **Every part is tried both unrotated and rotated 90°**, and goes
+- **Every part is tried both unrotated and rotated 90 degrees**, and goes
   wherever it yields the lowest resulting top edge. That is what turns
   the tall pin-header connectors on their sides and lets the 0603s
   backfill the low spots beside the big parts.
 - **Keepouts are real packer inputs**, not checks applied afterwards.
+- **The bridge, socket and panel connector are placed first** (`PIN_FIRST`
+  in `build_pcb.py`), so the DSI-to-LVDS bridge sits beside the Verdin
+  socket instead of 75 mm away. Area order alone had put it there, and
+  nearly every open net in the first routing run was at that bridge.
+- **A passive goes near its own IC** (`PULL`). Once its anchor IC is
+  down, a passive takes the slot closest to it, with a height penalty so
+  it cannot strand a void below. Plain lowest-gap order had put a
+  pull-up 130 mm from the chip it belongs to. Estimated wirelength fell
+  from 7,612 to 5,895 mm (`tools/placement_metric.py`), and FreeRouting
+  at 12 passes went from 22 unrouted to 4.
+- Spacing between parts (`CLEAR`) is 2.0 mm, up from 1.3. That alone took
+  12-pass routing from 22 unrouted to 11, at a cost of 7 mm of height.
 
-Parts are sorted so the large awkward parts are placed first while the
-skyline is still free, and everything else follows in functional-group
-order so each IC keeps its own passives nearby. Group membership is
-derived from the netlist — each part joins whichever IC or connector it
-shares the most **non-rail** nets with. Rails are excluded deliberately:
-GND touches everything and would make every part look equally related to
-everything else.
+Group membership is derived from the netlist: each part joins whichever
+IC or connector it shares the most **non-rail** nets with. Rails are
+excluded deliberately: GND touches everything and would make every part
+look equally related to everything else.
 
-The Verdin socket is rotated 90° as part of that. Its footprint is
-36 × 79 mm, tall and narrow; on its side it is 79 × 36 mm and the board
+The Verdin socket is rotated 90 degrees as part of that. Its footprint is
+36 x 79 mm, tall and narrow; on its side it is 79 x 36 mm and the board
 becomes landscape, which is also the shape a dash opening wants.
-
-Together those took the board from 148 × 164 mm to **148 × 64 mm** — a
-61% area reduction — with 16 parts rotated.
 
 **Schematic complete — every block wired except the backlight.**
 `build_schematic.py` generates a real, KiCad-loadable schematic

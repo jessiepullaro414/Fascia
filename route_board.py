@@ -52,6 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PCB = os.path.join(HERE, "Fascia.kicad_pcb")
 DSN = os.path.join(HERE, "Fascia.dsn")
 SES = os.path.join(HERE, "Fascia.ses")
+ROUTE_LOG = os.path.join(HERE, "Fascia-route.log")
 FREEROUTING_JAR = os.path.join(HERE, "tools", "freerouting-2.2.4.jar")
 
 KICAD_PYTHON = r"C:\Program Files\KiCad\10.0\bin\python.exe"
@@ -161,14 +162,26 @@ def run_freerouting(quiet=False):
            "--gui.enabled=false"]
     if not quiet:
         print("Running:", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    # FreeRouting logs to stdout even on success - keep the tail, it's where
-    # the final pass/route-completion summary shows up.
-    tail = result.stdout.strip().splitlines()[-40:]
+    # Stream FreeRouting's output to Fascia-route.log as it arrives instead
+    # of capturing it. A pass takes about a minute on this board and a full
+    # run close to an hour; capturing made a slow run indistinguishable from
+    # a hung one (and cost a 54-minute run whose unrouted count was never
+    # seen). `tail -f Fascia-route.log` shows per-pass progress.
+    lines = []
+    with open(ROUTE_LOG, "a", encoding="utf-8") as log:
+        log.write(f"\n\n=== FreeRouting run, -mp {MAX_PASSES} ===\n")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace")
+        for line in proc.stdout:
+            lines.append(line)
+            log.write(line)
+            log.flush()
+        proc.wait()
+    result = subprocess.CompletedProcess(cmd, proc.returncode, "".join(lines), "")
     if not quiet:
-        print("\n".join(tail))
+        print("\n".join(result.stdout.strip().splitlines()[-40:]))
     if result.returncode != 0:
-        print(result.stderr.strip()[-2000:], file=sys.stderr)
+        print(result.stdout.strip()[-2000:], file=sys.stderr)
         raise SystemExit(f"FreeRouting failed (exit {result.returncode})")
     if not os.path.isfile(SES):
         raise SystemExit("FreeRouting exited OK but did not produce a .ses file")
@@ -192,7 +205,7 @@ def run_freerouting(quiet=False):
 # actually converges: keep the first clean result, and if none of the
 # attempts is clean, keep the best one and say so loudly rather than leaving
 # a silently-incomplete board behind.
-MAX_ROUTE_ATTEMPTS = 6
+MAX_ROUTE_ATTEMPTS = int(os.environ.get("ROUTE_ATTEMPTS", 6))
 
 
 def route_until_clean():
@@ -492,7 +505,7 @@ for w in sorted(hist, reverse=True):
 # real_unconnected_count()'s own comment) - when it's wrong, no amount
 # of retrying FreeRouting alone fixes it, since route_until_clean()
 # already believed it succeeded and stopped.
-MAX_PIPELINE_ATTEMPTS = 3
+MAX_PIPELINE_ATTEMPTS = int(os.environ.get("PIPELINE_ATTEMPTS", 3))
 
 
 def regenerate_unrouted_board():
@@ -555,7 +568,7 @@ if __name__ == "__main__":
         regenerate_unrouted_board()
     for pipeline_attempt in range(1, MAX_PIPELINE_ATTEMPTS + 1):
         export_dsn()
-        route_until_clean()
+        self_reported = route_until_clean()
         import_ses()
         widen_trunks()
         add_and_fill_zones()
@@ -565,10 +578,16 @@ if __name__ == "__main__":
                   f"{pipeline_attempt}/{MAX_PIPELINE_ATTEMPTS}).")
             report_pair_skew()
             break
-        print(f"\nWARNING: FreeRouting/route_until_clean() reported success, but "
-              f"kicad-cli's own real DRC found {real_unconnected} unconnected "
-              f"item(s) (pipeline attempt {pipeline_attempt}/{MAX_PIPELINE_ATTEMPTS}) - "
-              f"the self-reported count was wrong. ", end="")
+        report_pair_skew()
+        if self_reported:
+            why = (f"FreeRouting itself left {self_reported} unrouted and kicad-cli's "
+                   f"DRC finds {real_unconnected} unconnected item(s)")
+        else:
+            why = (f"FreeRouting reported 0 unrouted but kicad-cli's own DRC found "
+                   f"{real_unconnected} unconnected item(s) - the self-reported count "
+                   f"was wrong")
+        print(f"\nWARNING: {why} (pipeline attempt "
+              f"{pipeline_attempt}/{MAX_PIPELINE_ATTEMPTS}). ", end="")
         if pipeline_attempt < MAX_PIPELINE_ATTEMPTS:
             print("Regenerating a fresh unrouted board and trying the whole "
                   "pipeline again.")

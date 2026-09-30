@@ -193,7 +193,7 @@ def footprint_bbox(fp):
 # and would make every part look equally related to everything.
 # ---------------------------------------------------------------------------
 MARGIN = 4.0        # board edge to nearest part
-CLEAR = 1.3         # clearance folded into each part's reserved footprint
+CLEAR = 2.0         # clearance folded into each part's reserved footprint
 
 loaded = {ref: load_footprint(p["footprint"]) for ref, p in parts.items()}
 raw_boxes = {ref: footprint_bbox(fp) for ref, fp in loaded.items()}
@@ -238,7 +238,8 @@ def rotated_bbox(bb, angle):
     return bb
 
 
-def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
+def skyline_pack(refs, max_width, margin, sort_key, initial_skyline,
+                 anchor_of=None, pull=0.0):
     sized = []
     for ref in refs:
         x0, y0, x1, y1 = raw_boxes[ref]
@@ -255,8 +256,8 @@ def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
             h = max(h, sh)
         return h
 
-    def best_position(w):
-        best = None
+    def all_positions(w):
+        out = []
         cand = set()
         for sx, sw, _sh in skyline:
             cand.add(sx)
@@ -264,10 +265,8 @@ def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
         for x in cand:
             if x < -1e-9 or x + w > max_width + 1e-9:
                 continue
-            y = profile_height(x, w)
-            if best is None or (y, x) < (best[0], best[1]):
-                best = (y, x)
-        return best
+            out.append((profile_height(x, w), x))
+        return out
 
     def update_skyline(x, w, top):
         x_end = x + w
@@ -293,20 +292,32 @@ def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
                 merged.append(seg)
         return merged
 
-    placed, rotated = {}, set()
+    placed, rotated, centre = {}, set(), {}
     for ref, w, h, x0, y0, x1, y1 in sized:
         options = []
-        p0 = best_position(w + margin)
-        if p0 is not None:
-            options.append((p0[0] + h + margin, p0[1], False))
-        p90 = best_position(h + margin)
-        if p90 is not None:
-            options.append((p90[0] + w + margin, p90[1], True))
+        for y, x in all_positions(w + margin):
+            options.append((y + h + margin, x, False, w + margin, h + margin))
+        for y, x in all_positions(h + margin):
+            options.append((y + w + margin, x, True, h + margin, w + margin))
         if not options:
             raise RuntimeError(f"{ref} ({w:.1f}x{h:.1f}) does not fit in "
                                f"{max_width:.1f} mm even alone")
-        options.sort(key=lambda o: (o[0], o[1]))
-        top, x, is_rot = options[0]
+        anchor = centre.get(anchor_of.get(ref)) if anchor_of else None
+        if anchor is None or pull <= 0.0:
+            # Lowest, then leftmost - the plain skyline rule.
+            options.sort(key=lambda o: (o[0], o[1]))
+        else:
+            # A passive whose IC is already down: take the slot nearest that
+            # IC, with a height penalty so it cannot strand a void below.
+            # Pure skyline order sent a pull-up resistor 130 mm from the
+            # chip it belongs to, because it simply took the lowest gap.
+            def cost(o):
+                top_, x_, _r, rw_, rh_ = o
+                return (pull * ((x_ + rw_ / 2 - anchor[0]) ** 2 +
+                                (top_ - rh_ / 2 - anchor[1]) ** 2) ** 0.5
+                        + top_, x_)
+            options.sort(key=cost)
+        top, x, is_rot = options[0][:3]
         if is_rot:
             rw, rh = h + margin, w + margin
             skyline = update_skyline(x, rw, top)
@@ -317,10 +328,12 @@ def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
             # put a rotated header's far pads against its neighbour.
             placed[ref] = (x - y0, (top - rh) + x1)
             rotated.add(ref)
+            centre[ref] = (x + rw / 2, top - rh / 2)
         else:
             rw, rh = w + margin, h + margin
             skyline = update_skyline(x, rw, top)
             placed[ref] = (x - x0, (top - rh) - y0)
+            centre[ref] = (x + rw / 2, top - rh / 2)
 
     used_w = used_h = 0.0
     for ref, w, h, x0, y0, x1, y1 in sized:
@@ -334,6 +347,18 @@ def skyline_pack(refs, max_width, margin, sort_key, initial_skyline):
     return placed, rotated, used_w, used_h
 
 
+# Placed before everything else, in this order: the DSI-to-LVDS bridge, the
+# Verdin socket, then the panel connector. Pure area order put the bridge
+# 75 mm from the socket whose DSI pairs feed it - a routing problem (the
+# first full FreeRouting run plateaued at 18-28 unrouted, with nearly all the
+# open nets at that bridge) and a signal-integrity one, since those pairs run
+# at ~925 Mbps/lane. The skyline takes the lowest-then-leftmost slot, so
+# the bridge lands in the corner and the socket beside it, with the socket's
+# DSI pins at its bridge-side end.
+PULL = float(os.environ.get("FASCIA_PULL", 1.0))   # mm of height worth 1 mm of anchor distance
+PIN_FIRST = ["U5", "J1", "J4"]
+assert all(r in parts for r in PIN_FIRST), PIN_FIRST
+
 BOARD_W = 150.0
 INNER = BOARD_W - 2 * MARGIN
 
@@ -345,10 +370,13 @@ origin, rotated_refs, used_w, used_h = skyline_pack(
     # area order scatters each IC's passives away from it. This gets the
     # large awkward parts placed while the skyline is still free, then
     # keeps the small stuff with its own IC.
-    sort_key=lambda t: (0 if t[1] * t[2] > 90.0 else 1,
-                        0 if t[1] * t[2] > 90.0 else group_rank[t[0]],
-                        -(t[1] * t[2])),
-    initial_skyline=[(0.0, INNER, 0.0)])
+    sort_key=lambda t: ((-1, PIN_FIRST.index(t[0]), 0) if t[0] in PIN_FIRST else
+                        (0 if t[1] * t[2] > 90.0 else 1,
+                         0 if t[1] * t[2] > 90.0 else group_rank[t[0]],
+                         -(t[1] * t[2]))),
+    initial_skyline=[(0.0, INNER, 0.0)],
+    anchor_of={r: g for r, g in group_of.items() if r != g},
+    pull=PULL)
 
 angles = {ref: 90.0 for ref in rotated_refs}
 placement = {ref: (round(MARGIN + x, 3), round(MARGIN + y, 3))

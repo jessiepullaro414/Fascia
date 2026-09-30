@@ -31,3 +31,10 @@ Thumbs.db
 # not source.
 *.kicad_prl
 *-erc.rpt
+
+# routing run logs
+Fascia-route.log
+Fascia-run.out
+Fascia-probe.out
+Fascia.dsn
+Fascia.ses
