@@ -27,13 +27,20 @@ How it works, and why it is shaped this way:
     from the pad centre to that node (at most 0.035 mm).
   * A pad can be sealed in. On this board the three connections FreeRouting
     could not finish were all fine-pitch QFP pads whose neighbours' fan-out
-    tracks left a single-cell corridor that ended at a wall. The first
-    version of this script just reported "no path"; a flood fill from the
-    pad showed the reachable region was the pad's own 1.55 mm length. So a
-    search that dries up quickly is reported as sealed, the tracks and vias
-    within a clearance of that pocket are removed, and the search is retried.
-    Removing them breaks their nets, which is fine: the next round reads the
-    new open connections from DRC and routes those.
+    tracks left a single-cell corridor that ended at a wall; a flood fill
+    from U9.28 reached only the pad's own 1.55 mm length. So pads and the
+    board edge are HARD keep-outs, and other nets' tracks and vias are SOFT:
+    the search may cross them at a price (SOFT_PENALTY per cell), and only
+    the copper the chosen path actually crosses is ripped up. The next round
+    reads the newly opened connections from DRC and routes those.
+  * STATUS: this does not converge on Fascia. Open connections went
+    3 -> 17 -> 16 -> 21 over four rounds (an earlier version that ripped
+    everything near the pocket went 3 -> 20 -> 20), because re-laying a
+    ripped net crosses something else. So the driver compares DRC before
+    and after and RESTORES THE ORIGINAL BOARD unless the result is strictly
+    better. It is kept because the A* core, the sealed-pad diagnosis and the
+    safety net are all sound, and because it may work on a less congested
+    board; see PLAN.md for what to do about this one.
   * Zones are NOT treated as obstacles. A new track through a GND pour just
     gets a clearance cut when the pour is refilled, so the zones are removed
     before routing and rebuilt afterwards by route_board.add_and_fill_zones()
@@ -59,13 +66,14 @@ PAIRS = os.path.join(os.environ.get("TEMP", HERE), "fascia_open_pairs.json")
 
 RES = 0.05           # grid pitch, mm
 TRACK_W = 0.2        # Default class width
-CLEARANCE = 0.2      # what kicad-cli actually enforces (see route_board.py)
+CLEARANCE = 0.22     # kicad-cli enforces 0.2; the extra 0.02 absorbs grid rounding
 VIA_D, VIA_DRILL = 0.6, 0.3
 EDGE_CLEAR = 0.5     # min_copper_edge_clearance
 VIA_COST = 3.0       # mm of track a via is worth
 QUICK_CAP = 300_000  # expansions before a search is called "not obviously sealed"
 MAX_EXPANSIONS = 15_000_000
-RIP_REACH = 0.75     # mm around a sealed pocket within which copper is ripped up
+SOFT_PENALTY = 0.4   # mm-equivalent charged per cell of crossing another net's track
+RIP_MARGIN = 0.03    # mm of extra reach when deciding what a new path has crossed
 MAX_ROUNDS = int(os.environ.get("FINISH_ROUNDS", 8))
 
 PAD_RE = re.compile(r"(?:PTH |SMD )?[Pp]ad ([^ ]+) \[([^\]]+)\] of ([^ ]+)")
@@ -295,14 +303,22 @@ def route_under_kicad():
         return [lidx[l] for l in pad.GetLayerSet().Seq() if l in lidx]
 
     def build_masks(netcode):
-        raw = np.zeros((NL, ny, nx), dtype=bool)
+        """Hard and soft keep-outs. Pads and the board edge are HARD: a
+        track can never go there. Other nets' tracks and vias are SOFT: the
+        search may cross them at a price, and whatever it crosses is ripped
+        up afterwards. Splitting them is the point - ripping up everything
+        near a stuck pad rebuilt more than it fixed (20 open after three
+        rounds), where ripping only what the new path actually crosses
+        disturbs the minimum."""
+        hard = np.zeros((NL, ny, nx), dtype=bool)
+        soft = np.zeros((NL, ny, nx), dtype=bool)
         for fp in board.GetFootprints():
             for pad in fp.Pads():
                 if pad.GetNetCode() == netcode:
                     continue
                 b = pad.GetBoundingBox()
                 for li in pad_layers(pad):
-                    stamp_rect(raw[li], MM(b.GetLeft()) - CLEARANCE,
+                    stamp_rect(hard[li], MM(b.GetLeft()) - CLEARANCE,
                                MM(b.GetTop()) - CLEARANCE,
                                MM(b.GetRight()) + CLEARANCE,
                                MM(b.GetBottom()) + CLEARANCE)
@@ -313,26 +329,30 @@ def route_under_kicad():
                 p = t.GetPosition()
                 r = MM(t.GetWidth(pcbnew.F_Cu)) / 2 + CLEARANCE
                 for li in range(NL):
-                    stamp_capsule(raw[li], MM(p.x), MM(p.y), MM(p.x), MM(p.y), r)
+                    stamp_capsule(soft[li], MM(p.x), MM(p.y), MM(p.x), MM(p.y), r)
             else:
-                s, e = t.GetStart(), t.GetEnd()
+                s_, e_ = t.GetStart(), t.GetEnd()
                 li = lidx.get(t.GetLayer())
                 if li is None:
                     continue
-                stamp_capsule(raw[li], MM(s.x), MM(s.y), MM(e.x), MM(e.y),
+                stamp_capsule(soft[li], MM(s_.x), MM(s_.y), MM(e_.x), MM(e_.y),
                               MM(t.GetWidth()) / 2 + CLEARANCE)
         # Keep copper off the board edge.
         edge = int(round(EDGE_CLEAR / RES))
         for li in range(NL):
-            raw[li, :edge, :] = raw[li, -edge:, :] = True
-            raw[li, :, :edge] = raw[li, :, -edge:] = True
-        track = np.stack([dilate(raw[li], int(round(TRACK_W / 2 / RES)))
-                          for li in range(NL)])
+            hard[li, :edge, :] = hard[li, -edge:, :] = True
+            hard[li, :, :edge] = hard[li, :, -edge:] = True
+        half = int(round(TRACK_W / 2 / RES))
         via_r = int(round(VIA_D / 2 / RES))
-        via_block = np.zeros((ny, nx), dtype=bool)
+        track_hard = np.stack([dilate(hard[li], half) for li in range(NL)])
+        track_soft = np.stack([dilate(soft[li], half) for li in range(NL)]) & ~track_hard
+        via_hard = np.zeros((ny, nx), dtype=bool)
+        via_soft = np.zeros((ny, nx), dtype=bool)
         for li in range(NL):
-            via_block |= dilate(raw[li], via_r)
-        return track, via_block
+            via_hard |= dilate(hard[li], via_r)
+            via_soft |= dilate(soft[li], via_r)
+        via_soft &= ~via_hard
+        return track_hard, track_soft, via_hard, via_soft
 
     def nearest_free(track, li, cy, cx, reach=6):
         best = None
@@ -398,9 +418,11 @@ def route_under_kicad():
             (-1, -1, math.sqrt(2)), (-1, 1, math.sqrt(2)),
             (1, -1, math.sqrt(2)), (1, 1, math.sqrt(2))]
 
-    def search(track, via_block, starts, goals, cap):
+    def search(masks, starts, goals, cap):
         """A* between node sets. Returns (path, "ok", None), (None, "sealed",
-        the cells it could reach) or (None, "capped", None)."""
+        the cells it could reach) or (None, "capped", None). Crossing a soft
+        cell costs SOFT_PENALTY extra per step."""
+        track_hard, track_soft, via_hard, via_soft = masks
         goal_set = set(goals)
         gy, gx = goals[0][1], goals[0][2]
 
@@ -409,9 +431,9 @@ def route_under_kicad():
             return RES * (max(dy, dx) + (math.sqrt(2) - 1) * min(dy, dx))
 
         g, came, heap = {}, {}, []
-        for s in starts:
-            g[s] = 0.0
-            heapq.heappush(heap, (h(s[1], s[2]), 0.0, s))
+        for s_ in starts:
+            g[s_] = 0.0
+            heapq.heappush(heap, (h(s_[1], s_[2]), 0.0, s_))
         seen = 0
         while heap:
             _f, gc, node = heapq.heappop(heap)
@@ -428,55 +450,70 @@ def route_under_kicad():
             li, y, x = node
             for dy, dx, w in DIRS:
                 yy, xx = y + dy, x + dx
-                if not (0 <= yy < ny and 0 <= xx < nx) or track[li, yy, xx]:
+                if not (0 <= yy < ny and 0 <= xx < nx) or track_hard[li, yy, xx]:
                     continue
-                if dy and dx and (track[li, y + dy, x] or track[li, y, x + dx]):
+                if dy and dx and (track_hard[li, y + dy, x] or track_hard[li, y, x + dx]):
                     continue        # no cutting a blocked corner
                 nn = (li, yy, xx)
-                ng = gc + w * RES
+                ng = gc + w * RES + (SOFT_PENALTY if track_soft[li, yy, xx] else 0.0)
                 if ng < g.get(nn, 1e18):
                     g[nn] = ng
                     came[nn] = node
                     heapq.heappush(heap, (ng + h(yy, xx), ng, nn))
-            if not via_block[y, x]:
+            if not via_hard[y, x]:
                 for lj in range(NL):
-                    if lj != li and not track[lj, y, x]:
+                    if lj != li and not track_hard[lj, y, x]:
                         nn = (lj, y, x)
-                        ng = gc + VIA_COST
+                        ng = gc + VIA_COST + (SOFT_PENALTY * 12 if (
+                            via_soft[y, x] or track_soft[lj, y, x]) else 0.0)
                         if ng < g.get(nn, 1e18):
                             g[nn] = ng
                             came[nn] = node
                             heapq.heappush(heap, (ng + h(y, x), ng, nn))
         return None, "sealed", list(g)
 
-    def rip_walls(pocket, netcode):
-        """Remove every track and via of another net within RIP_REACH of the
-        cells the search could reach."""
-        pts = [(li, *point(y, x)) for li, y, x in pocket]
-        if len(pts) > 4000:
-            pts = pts[::len(pts) // 4000]
+    def rip_crossed(path, netcode):
+        """Remove the tracks and vias of other nets that the new path
+        actually comes within clearance of - and nothing else."""
+        # Per-layer sample points along the path; a via touches every layer.
+        pts = {li: [] for li in range(NL)}
+        for (li, y, x), nxt in zip(path, path[1:] + [None]):
+            px_, py_ = point(y, x)
+            pts[li].append((px_, py_))
+            if nxt is not None and nxt[0] != li:
+                for lj in range(NL):
+                    pts[lj].append((px_, py_))
+        arr = {li: np.array(v) for li, v in pts.items() if v}
         removed, nets = 0, set()
         for t in list(board.GetTracks()):
             if t.GetNetCode() == netcode:
                 continue
-            is_via = t.GetClass() == "PCB_VIA"
-            if is_via:
+            if t.GetClass() == "PCB_VIA":
                 q = t.GetPosition()
-                ax, ay = MM(q.x), MM(q.y)
-                bx, by = ax, ay
-                reach = RIP_REACH + MM(t.GetWidth(pcbnew.F_Cu)) / 2
+                ax = bx = MM(q.x)
+                ay = by = MM(q.y)
+                limit = MM(t.GetWidth(pcbnew.F_Cu)) / 2
+                layers = list(arr)
             else:
-                s, e = t.GetStart(), t.GetEnd()
-                ax, ay, bx, by = MM(s.x), MM(s.y), MM(e.x), MM(e.y)
-                reach = RIP_REACH + MM(t.GetWidth()) / 2
-            tli = None if is_via else lidx.get(t.GetLayer())
-            L2 = (bx - ax) ** 2 + (by - ay) ** 2
-            hit = False
-            for li, px_, py_ in pts:
-                if tli is not None and li != tli:
+                li = lidx.get(t.GetLayer())
+                if li is None or li not in arr:
                     continue
-                u = 0 if L2 == 0 else max(0, min(1, ((px_ - ax) * (bx - ax) + (py_ - ay) * (by - ay)) / L2))
-                if math.hypot(px_ - (ax + u * (bx - ax)), py_ - (ay + u * (by - ay))) <= reach:
+                s_, e_ = t.GetStart(), t.GetEnd()
+                ax, ay, bx, by = MM(s_.x), MM(s_.y), MM(e_.x), MM(e_.y)
+                limit = MM(t.GetWidth()) / 2
+                layers = [li]
+            limit += CLEARANCE + TRACK_W / 2 + RIP_MARGIN
+            hit = False
+            for li in layers:
+                p = arr[li]
+                dx, dy = bx - ax, by - ay
+                L2 = dx * dx + dy * dy
+                if L2 == 0:
+                    d = np.hypot(p[:, 0] - ax, p[:, 1] - ay)
+                else:
+                    u = np.clip(((p[:, 0] - ax) * dx + (p[:, 1] - ay) * dy) / L2, 0, 1)
+                    d = np.hypot(p[:, 0] - (ax + u * dx), p[:, 1] - (ay + u * dy))
+                if d.min() < limit:
                     hit = True
                     break
             if hit:
@@ -485,7 +522,10 @@ def route_under_kicad():
                 graveyard.append(t)
                 removed += 1
         index_items()
-        print(f"  ripped up {removed} track/via item(s) on: {', '.join(sorted(nets))}")
+        if removed:
+            print(f"  crossed and ripped up {removed} item(s) on: "
+                  f"{', '.join(sorted(nets))}")
+        return removed
 
     def emit(path, netcode, anchor_a, anchor_b):
         """Path of (layer, y, x) nodes -> tracks and vias on the board."""
@@ -539,49 +579,39 @@ def route_under_kicad():
         return made, len(vias)
 
     def route_pair(p):
-        """Route one connection, ripping up whatever seals a pad in.
-        Returns True on success."""
+        """Route one connection through soft obstacles, then rip up exactly
+        what it crossed. Returns True on success."""
         net = p["net"]
         netcode = board.GetNetcodeFromNetname(net)
-        for _attempt in range(3):
-            track, via_block = build_masks(netcode)
-            starts, anchor_a = resolve(p["a"], track)
-            goals, anchor_b = resolve(p["b"], track)
-            if not starts or not goals:
-                print(f"{net}: no free cell next to "
-                      f"{'start' if not starts else 'end'} - cannot route")
-                return False
-            path, why, pocket = search(track, via_block, starts, goals, QUICK_CAP)
-            sealed_pocket = pocket if why == "sealed" else None
-            if path is None and why == "capped":
-                # Not sealed at the start; check the goal end before paying
-                # for a full search that a sealed goal would exhaust.
-                rpath, rwhy, rpocket = search(track, via_block, goals, starts,
-                                              QUICK_CAP)
-                if rpath is not None:
-                    path = rpath[::-1]
-                elif rwhy == "sealed":
-                    sealed_pocket = rpocket
-                else:
-                    path, _w, _p = search(track, via_block, starts, goals,
-                                          MAX_EXPANSIONS)
-            if path is not None:
-                segs, nvias = emit(path, netcode, anchor_a, anchor_b)
-                length = sum(math.hypot(b[2] - a[2], b[1] - a[1]) * RES
-                             for a, b in zip(path, path[1:]) if a[0] == b[0])
-                print(f"{net}: routed, {segs} segments, {nvias} via(s), "
-                      f"~{length:.1f} mm of track")
-                return True
-            if sealed_pocket is None:
-                print(f"{net}: NO PATH FOUND (search gave up; not a sealed pad)")
-                return False
-            y0, x0 = sealed_pocket[0][1], sealed_pocket[0][2]
-            print(f"{net}: sealed in - reachable region is {len(sealed_pocket)} "
-                  f"cells around ({point(y0, x0)[0]:.2f}, {point(y0, x0)[1]:.2f}); "
-                  f"ripping up what walls it in")
-            rip_walls(sealed_pocket, netcode)
-        print(f"{net}: still sealed after ripping up - giving up")
-        return False
+        masks = build_masks(netcode)
+        track_hard = masks[0]
+        starts, anchor_a = resolve(p["a"], track_hard)
+        goals, anchor_b = resolve(p["b"], track_hard)
+        if not starts or not goals:
+            print(f"{net}: no free cell next to "
+                  f"{'start' if not starts else 'end'} - cannot route")
+            return False
+        path, why, _pocket = search(masks, starts, goals, QUICK_CAP)
+        if path is None and why == "capped":
+            # Not sealed at the start; check the goal end before paying for a
+            # full search that a pad walled in by other PADS would exhaust.
+            rpath, rwhy, _rp = search(masks, goals, starts, QUICK_CAP)
+            if rpath is not None:
+                path = rpath[::-1]
+            elif rwhy == "sealed":
+                why = "sealed"
+            else:
+                path, why, _p = search(masks, starts, goals, MAX_EXPANSIONS)
+        if path is None:
+            reason = "walled in by pads" if why == "sealed" else "search gave up"
+            print(f"{net}: NO PATH FOUND ({reason})")
+            return False
+        rip_crossed(path, netcode)
+        segs, nvias = emit(path, netcode, anchor_a, anchor_b)
+        length = sum(math.hypot(b[2] - a[2], b[1] - a[1]) * RES
+                     for a, b in zip(path, path[1:]) if a[0] == b[0])
+        print(f"{net}: routed, {segs} segments, {nvias} via(s), ~{length:.1f} mm of track")
+        return True
 
     index_items()
     failed = 0

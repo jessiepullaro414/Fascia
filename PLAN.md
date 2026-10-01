@@ -46,17 +46,37 @@ A* search through the real copper and then lets DRC judge.
     clearance violations from the 0.05 mm grid. Net result is worse than
     the 3-open board, so the script **restores the original board when DRC
     says it is not better**. Checked: it does.
-  - Next idea if this is pursued: negotiated (soft-obstacle) routing, where
-    the search may cross other nets' tracks at a cost and only the copper
-    the path actually crosses is ripped, instead of everything within
-    0.75 mm of the pocket. Pads stay hard obstacles.
+  - Tried the next idea: **negotiated (soft-obstacle) routing**, where the
+    search crosses other nets' tracks at a cost and only the copper the
+    path actually crosses is ripped; pads stay hard. It did not converge
+    either: open connections went 3 -> 17 -> 16 -> 21 over four rounds,
+    with 59 real violations at the end, and the safety net restored the
+    original board. Ripping what a path crosses still opens the nets it
+    cuts, and re-laying those crosses something else.
+  - My reading, which the runs suggest but do not prove: this is more a
+    congestion problem than a router-quality one. Ten AOUT
+    pins (five differential pairs) leave `U9`'s left edge at 0.5 mm pitch
+    beside GND, the mic and I2S fan-out, and the codec's other nets, and
+    the same is true at `U5`'s LVDS side. There is not room for all of them
+    to escape, so any one connection that is forced through displaces
+    another. More router will not fix that; more room or a different
+    arrangement will.
 - [ ] DRC-verified result: 0 unconnected items, no new clearance violations
 
 Acceptance: `python run_drc.py` reports schematic parity 0, 0 unconnected
-items, and nothing outside the two expected categories. The fallback is
-hand-routing the three in KiCad, which is now the recommended path: the
-three pads are sealed in by neighbouring fan-out, and moving a few of
-those tracks by hand is quicker than teaching the script to do it.
+items, and nothing outside the two expected categories.
+
+Ways forward, cheapest first:
+
+1. Hand-route the last three in KiCad. Nudging a few fan-out tracks near
+   `U9` and `U5` is quick by hand, and a person can see which neighbour is
+   the cheapest to move.
+2. Give `U9` and `U5` more room: a larger `CLEAR` just around those two
+   parts (or a keep-out ring) in `build_pcb.py`, then re-run
+   `route_board.py`. Spacing 1.3 to 2.0 mm already took 12-pass routing from
+   22 unrouted to 11, so this is the lever that has worked before.
+3. Add layers. Two more inner layers give the audio and LVDS escapes
+   somewhere to go, at a fab cost.
 
 ## 3. Signal integrity before this is a real board
 
